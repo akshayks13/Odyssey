@@ -6,9 +6,9 @@ Used by:
 - Critic (check_attraction_availability)
 
 Live path: Foursquare Places Search + Place Details when FOURSQUARE_API_KEY
-is set. Falls back to the Kerala seed dataset when the key is missing or
-the API call fails (Foursquare India coverage for hill-station towns is
-inconsistent).
+is set (Places API host `places-api.foursquare.com`, Bearer service key).
+Falls back to the Kerala seed dataset when the key is missing or
+the API call fails.
 """
 from __future__ import annotations
 
@@ -19,9 +19,10 @@ from config import FOURSQUARE_API_KEY, MAPBOX_API_KEY
 from tools.mapbox_api import geocode_location, get_static_map_url
 from tools.seed_data import all_destinations, get_activities
 
-FSQ_SEARCH_URL = "https://api.foursquare.com/v3/places/search"
-FSQ_PLACE_URL = "https://api.foursquare.com/v3/places/{fsq_id}"
-FSQ_PHOTOS_URL = "https://api.foursquare.com/v3/places/{fsq_id}/photos"
+FSQ_SEARCH_URL = "https://places-api.foursquare.com/places/search"
+FSQ_PLACE_URL = "https://places-api.foursquare.com/places/{fsq_id}"
+FSQ_PHOTOS_URL = "https://places-api.foursquare.com/places/{fsq_id}/photos"
+FSQ_API_VERSION = "2025-06-17"
 
 _TIMEOUT = 8.0
 _DEFAULT_SCORES = {
@@ -38,7 +39,11 @@ _DEFAULT_SCORES = {
 def _fsq_headers() -> dict | None:
     if not FOURSQUARE_API_KEY:
         return None
-    return {"Authorization": FOURSQUARE_API_KEY, "Accept": "application/json"}
+    return {
+        "Authorization": f"Bearer {FOURSQUARE_API_KEY}",
+        "Accept": "application/json",
+        "X-Places-Api-Version": FSQ_API_VERSION,
+    }
 
 
 def _hours_from_details(data: dict) -> tuple[int, int] | None:
@@ -61,8 +66,10 @@ def _hours_from_details(data: dict) -> tuple[int, int] | None:
 
 
 def _coords_from_place(place: dict) -> tuple[float | None, float | None]:
-    geo = (place.get("geocodes") or {}).get("main") or {}
-    lat, lng = geo.get("latitude"), geo.get("longitude")
+    lat, lng = place.get("latitude"), place.get("longitude")
+    if lat is None or lng is None:
+        geo = (place.get("geocodes") or {}).get("main") or {}
+        lat, lng = geo.get("latitude"), geo.get("longitude")
     if lat is None or lng is None:
         loc = place.get("location") or {}
         lat, lng = loc.get("latitude") or loc.get("lat"), loc.get("longitude") or loc.get("lng")
@@ -83,7 +90,7 @@ def _place_to_activity(place: dict, destination: str, category: str | None) -> d
     lat, lng = _coords_from_place(place)
     hours = _hours_from_details(place)
     return {
-        "id": place.get("fsq_id") or place.get("name", "unknown"),
+        "id": place.get("fsq_place_id") or place.get("fsq_id") or place.get("name", "unknown"),
         "name": place.get("name", "Unknown"),
         "destination": destination,
         "category": mapped,

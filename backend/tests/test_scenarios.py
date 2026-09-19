@@ -85,7 +85,7 @@ def test_scenario_budget_cut_triggers_budget_agent():
         type=DisruptionType.BUDGET_CUT,
         target="trip",
         description="Sponsor withdrew, budget cut",
-        new_budget_inr=18000,
+        new_budget_inr=8000,
     )
     GRAPH.update_state(
         config,
@@ -97,6 +97,6 @@ def test_scenario_budget_cut_triggers_budget_agent():
     later_messages = result2["agent_messages"][len(result["agent_messages"]) :]
     joined = " ".join(later_messages)
     assert "Budget Agent" in joined or "budget_agent" in joined
-    assert result2["budget_breakdown"].ceiling_inr == 18000
+    assert result2["budget_breakdown"].ceiling_inr == 8000
     # Either repaired under the new ceiling, or returned a best-effort plan with a warning
     assert result2.get("final_itinerary") is not None or result2.get("draft_itinerary") is not None

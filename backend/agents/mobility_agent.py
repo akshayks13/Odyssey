@@ -12,7 +12,7 @@ from algorithms.astar import astar_route_search, build_travel_graph
 from llm import get_llm, llm_decide, llm_provider_name
 from models.schemas import DisruptionType, Route, RouteLeg, TransportMode
 from orchestration.state import TripState
-from tools.amadeus_api import search_flights
+from tools.travel_market import search_flights
 from tools.cost_calculator import calculate_route_cost, check_transport_availability
 from tools.mapbox_api import get_directions
 

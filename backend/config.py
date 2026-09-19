@@ -20,10 +20,10 @@ SEED_DATA_PATH = PROJECT_ROOT / "data" / "kerala_seed.json"
 
 # --- LLM ---------------------------------------------------------------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
 # Tests / CI set this so the suite never bills a live model.
 LLM_DISABLED = os.getenv("ODYSSEY_DISABLE_LLM", "").lower() in {"1", "true", "yes"}
@@ -47,9 +47,7 @@ if LANGSMITH_API_KEY and LANGSMITH_TRACING:
 # --- External travel APIs (all optional) ---------------------------------
 MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
 FOURSQUARE_API_KEY = os.getenv("FOURSQUARE_API_KEY", "")
-AMADEUS_CLIENT_ID = os.getenv("AMADEUS_CLIENT_ID", "")
-AMADEUS_CLIENT_SECRET = os.getenv("AMADEUS_CLIENT_SECRET", "")
-WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY", "")
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 
 # --- Replanning ---------------------------------------------------------
 MAX_REPLAN_ITERATIONS = int(os.getenv("MAX_REPLAN_ITERATIONS", "3"))

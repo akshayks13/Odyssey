@@ -125,7 +125,7 @@ class Hotel(BaseModel):
     destination: str
     price_per_night_inr: float
     rating: float = 4.0
-    source: str = "seed"  # "amadeus" | "seed"
+    source: str = "seed"  # "gemini" | "seed" | "generated"
 
 
 class BudgetLineItem(BaseModel):

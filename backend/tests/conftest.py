@@ -5,6 +5,12 @@ from __future__ import annotations
 import os
 
 os.environ["ODYSSEY_DISABLE_LLM"] = "1"
+# Keep pytest offline even when backend/.env has live keys.
+os.environ["OPENWEATHER_API_KEY"] = ""
+os.environ["FOURSQUARE_API_KEY"] = ""
+os.environ["MAPBOX_API_KEY"] = ""
+os.environ["LANGSMITH_TRACING"] = "false"
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
 import pytest
 

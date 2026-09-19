@@ -131,8 +131,8 @@ def test_validate_trip_schema():
     assert bad["valid"] is False
 
 
-def test_amadeus_uses_real_iata_not_name_slice():
-    from tools.amadeus_api import _city_iata, search_flights, search_hotels
+def test_travel_market_uses_real_iata_not_name_slice():
+    from tools.travel_market import _city_iata, search_flights, search_hotels
 
     assert _city_iata("Kochi") == "COK"
     assert _city_iata("Munnar") is None
@@ -140,7 +140,9 @@ def test_amadeus_uses_real_iata_not_name_slice():
     assert flights["available"] is False
     assert flights.get("destination_iata") != "MUN"
     hotels = search_hotels.invoke({"destination": "Munnar", "budget_tier": "mid"})
-    assert hotels[0]["source"] in {"seed", "seed_default"}
+    assert hotels[0]["source"] in {"seed", "seed_default", "generated", "gemini"}
+    elsewhere = search_hotels.invoke({"destination": "Lisbon", "budget_tier": "mid"})
+    assert elsewhere[0]["price_per_night_inr"] > 0
 
 
 def test_plan_and_stream_endpoints():

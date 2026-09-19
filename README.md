@@ -42,20 +42,24 @@ This is **not** a mock-only pipeline when keys are present:
 |---|---|
 | **LLM (Gemini Flash, Groq fallback)** | ReAct tool-calling. Decides *what* to search, *which* cities/hotels to keep, *start city*, *pace*, *which agent to re-invoke*. |
 | **Deterministic tools** | A*, OR-Tools VRPTW, cost/budget arithmetic, preference cosine, validators. The model cannot invent rupee totals. |
-| **Live APIs** | Mapbox, Foursquare, Amadeus, WeatherAPI — used first when keys exist. |
+| **Live APIs** | Mapbox, Foursquare, OpenWeatherMap, Gemini (hotels/flights + agent tool-calling) — used first when keys exist. |
 | **`kerala_seed.json`** | Fallback **only** when an API key is missing or the call fails. So the demo still runs; it is not the primary planner. |
 
 Without `GEMINI_API_KEY` / `GROQ_API_KEY`, agents fall back to heuristics + seed so tests and offline demos work. With a key, each specialist runs `bind_tools` and the timeline messages say `via gemini:… tool-calling`. `/api/health` reports `"llm": null` when no key is loaded.
 
 ## LangSmith
 
-Set `LANGSMITH_API_KEY` (and optionally `LANGSMITH_PROJECT=odyssey`). Every LangGraph node, ReAct loop, and tool call is traced to [smith.langchain.com](https://smith.langchain.com). The landing page badge shows whether tracing is on.
+Set `LANGSMITH_API_KEY` (and optionally `LANGSMITH_PROJECT=odyssey`). Every LangGraph node, ReAct loop, and tool call is traced.
+
+Open the project: [odyssey on LangSmith](https://smith.langchain.com/o/d8cb6e0e-760d-44d4-bfa5-12c595e8d471/projects/p/bcac7ca7-bdd6-45bb-9478-471f959f49de)
+
+Latest live pipeline run (public): [odyssey:live-full-pipeline](https://smith.langchain.com/public/998433d4-9a8f-4383-83a9-d0a3bfcc5548/r)
 
 ## Prerequisites
 
 - Python 3.11+ (tested on 3.13)
 - Node.js 18+ (tested on 22)
-- Optional API keys (Gemini / Groq, Mapbox, Foursquare, Amadeus, WeatherAPI, LangSmith)
+- Optional API keys (Gemini / Groq, Mapbox, Foursquare, OpenWeatherMap, LangSmith)
 
 ## Local run
 

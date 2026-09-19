@@ -11,7 +11,7 @@ from __future__ import annotations
 from llm import get_llm, llm_decide, llm_provider_name
 from models.schemas import BudgetBreakdown, BudgetLineItem, DisruptionType, Hotel
 from orchestration.state import TripState
-from tools.amadeus_api import search_hotel_offers, search_hotels
+from tools.travel_market import search_hotel_offers, search_hotels
 from tools.budget_validator import generate_tradeoff_options, validate_budget
 from tools.cost_calculator import calculate_activity_costs, estimate_food_costs
 

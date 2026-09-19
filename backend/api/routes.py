@@ -8,12 +8,11 @@ from pydantic import BaseModel
 
 from api.sse import stream_graph_run, serialize_final_state
 from config import (
-    AMADEUS_CLIENT_ID,
     FOURSQUARE_API_KEY,
     LANGSMITH_PROJECT,
     LANGSMITH_TRACING,
     MAPBOX_API_KEY,
-    WEATHERAPI_KEY,
+    OPENWEATHER_API_KEY,
 )
 from llm import llm_provider_name
 from models.schemas import Disruption, DisruptionType
@@ -142,7 +141,7 @@ async def health():
         "apis": {
             "mapbox": bool(MAPBOX_API_KEY),
             "foursquare": bool(FOURSQUARE_API_KEY),
-            "amadeus": bool(AMADEUS_CLIENT_ID),
-            "weather": bool(WEATHERAPI_KEY),
+            "weather": bool(OPENWEATHER_API_KEY),
+            "hotels_flights": "gemini_generated",
         },
     }

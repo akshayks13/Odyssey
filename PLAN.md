@@ -1,6 +1,6 @@
 ---
 name: Odyssey Travel System
-overview: Design and implement Odyssey — a 6-agent LangGraph-powered adaptive travel planning system with real API integrations (Mapbox, Amadeus, WeatherAPI.com), weighted A* routing, OR-Tools VRPTW scheduling, and a Next.js frontend with live agent-progress streaming via SSE.
+overview: Design and implement Odyssey — a 6-agent LangGraph-powered adaptive travel planning system with real API integrations (Mapbox, OpenWeatherMap) plus Gemini-generated hotel/flight market data, weighted A* routing, OR-Tools VRPTW scheduling, and a Next.js frontend with live agent-progress streaming via SSE.
 todos:
   - id: repo-init
     content: Initialize git repo, push to GitHub (akshayks13/Odyssey), set up monorepo structure
@@ -9,7 +9,7 @@ todos:
     content: Define TripState TypedDict, all Pydantic schemas (TripSpec, Destination, Activity, Route, Itinerary, ValidationReport, Disruption)
     status: completed
   - id: tools-layer
-    content: "Implement all tools: mapbox_api.py (Geocoding/Directions), foursquare_api.py (Places/hours), amadeus_api.py (hotels/flights OAuth2), weather.py (WeatherAPI.com), cost_calculator.py, preference_scorer.py, schedule_validator.py, budget_validator.py"
+    content: "Implement all tools: mapbox_api.py (Geocoding/Directions), foursquare_api.py (Places/hours), travel_market.py (Gemini hotels/flights), weather.py (OpenWeatherMap), cost_calculator.py, preference_scorer.py, schedule_validator.py, budget_validator.py"
     status: completed
   - id: algorithms
     content: Implement weighted A* (astar.py — state=(location, visited_set, elapsed_time), haversine heuristic, weight escalation for anytime behavior), VRPTW scheduler (csp_solver.py — OR-Tools pywrapcp.RoutingModel with time windows from opening hours), multi-objective scorer (optimizer.py)
@@ -77,11 +77,11 @@ flowchart TD
 - **External APIs**:
   - **Mapbox**: map rendering, geocoding, road directions and travel-time matrices
   - **Foursquare Places**: attractions, categories, ratings and opening hours when available
-  - **Amadeus API** (free sandbox): Hotel Search, Flight Offers, full booking pipeline
-  - **WeatherAPI.com**: 14-day forecast, 100K calls/mo free (simpler + more generous than OpenWeatherMap)
+  - **Gemini travel market**: hotels and long-haul airfares generated per destination (locations vary)
+  - **OpenWeatherMap**: current weather + 5-day / 3-hour forecast
 - **Database**: SQLite for saved itineraries (enough for the course demo)
 - **Cache**: None
-- **Demo fallback**: bundled Kerala seed dataset so the demo still works if Amadeus/Foursquare miss India coverage
+- **Demo fallback**: bundled Kerala seed dataset so the demo still works if live places/weather APIs miss coverage
 - **Frontend**: Next.js 14 App Router (nodejs runtime) + Tailwind + shadcn/ui + Mapbox GL JS
 - **Streaming**: Server-Sent Events — FastAPI `StreamingResponse` + LangGraph `astream(version="v2", stream_mode=[...])` → Next.js `TransformStream` route handler
 - **Deployment**: local run only (no Docker for v1)
@@ -104,17 +104,17 @@ flowchart TD
 - **Tools**:
   - `search_destinations` → Mapbox Geocoding + Foursquare Places API (`textsearch`)
   - `search_attractions` → Foursquare Places API (category-based nearby search)
-  - `get_weather_forecast` → WeatherAPI.com 14-day forecast
+  - `get_weather_forecast` → OpenWeatherMap current + 5-day forecast
   - `score_preference_match` → custom weighted cosine similarity (deterministic)
-  - `get_place_photos` → Unsplash API or Mapbox Static Images
+  - `get_place_photos` → Foursquare photos when credits allow, else Mapbox Static Images
 
 ### Agent 3 — Budget Optimization Agent
 - **Input**: `TripSpec` + `selected_destinations` + `route` from Mobility (runs **after** Mobility so transport cost is included)
 - **Output**: Cost breakdown, accommodation options, trade-off recommendations
 - **LangChain pattern**: ReAct agent, uses `ToolRuntime` for state context injection
 - **Tools**:
-  - `search_hotels` → Amadeus Hotel Search API (`/v1/reference-data/locations/hotels/by-city`)
-  - `search_hotel_offers` → Amadeus Hotel Offers API (live pricing)
+  - `search_hotels` → Gemini market list (seed/heuristic if LLM is off)
+  - `search_hotel_offers` → cheapest quoted stay from that list
   - `calculate_activity_costs` → deterministic lookup table (category → avg cost by city tier)
   - `estimate_food_costs` → per-person-per-day by city tier
   - `validate_budget` → deterministic: compares itemized total vs. budget ceiling
@@ -128,7 +128,7 @@ flowchart TD
   - `build_travel_graph` → NetworkX `DiGraph`, edges weighted by (time, cost, mode)
   - `astar_route_search` → weighted A* over `(location, visited_set, elapsed_time)` state; haversine heuristic; weight-escalation for anytime behavior
   - `get_directions` → Mapbox Directions API (road/walking/cycling duration; rail remains rules/seed data)
-  - `search_flights` → Amadeus Flight Offers only for **long-haul / intercity air** (not Kochi–Munnar; that is road)
+  - `search_flights` → Gemini airfare estimate only for **long-haul / intercity air** (not Kochi–Munnar; that is road)
   - `check_transport_availability` → rules engine (bus/train/taxi by region)
   - `calculate_route_cost` → per-mode cost estimator
 
@@ -149,9 +149,9 @@ flowchart TD
 - **Tools**:
   - `check_budget_violations` → deterministic comparison
   - `check_schedule_conflicts` → overlap/gap scan
-  - `check_weather_disruptions` → WeatherAPI.com cross-referenced against itinerary days
+  - `check_weather_disruptions` → OpenWeatherMap rain risk cross-referenced against itinerary days
   - `check_attraction_availability` → Foursquare hours/status when available; explicit closures come from disruption events or seed data
-  - `check_transport_disruptions` → Amadeus availability re-check
+  - `check_transport_disruptions` → market airfare re-check
   - `generate_replan_directive` → LLM output: `{agent: "budget_agent", reason: "...", constraints: {...}}`
 
 ---
@@ -274,7 +274,7 @@ SSE event types (typed stream):
 {"type": "tool_result",  "agent": "mobility_agent",    "tool": "astar_route_search", "data": {...}}
 {"type": "step_complete","agent": "itinerary_architect","data": {...draft_itinerary...}}
 {"type": "done",         "data": {...final_itinerary...}, "score": 0.87}
-{"type": "error",        "agent": "budget_agent",       "message": "Amadeus API timeout, retrying..."}
+{"type": "error",        "agent": "budget_agent",       "message": "hotel search timeout, retrying..."}
 ```
 
 Key FastAPI pattern: graph compiled **once at startup** via `lifespan`; `thread_id = user_id:session_id`; `X-Accel-Buffering: no` header for Nginx.
@@ -323,7 +323,7 @@ Do **not** fan-out Mobility and Budget in parallel. LangGraph would run Architec
 - **Performance**: feasible itinerary; maximize `Score = w_p P + w_q Q + w_r R + w_b B - w_t T - w_c C`; stay under budget and daily travel cap
 - **Environment**: partially observable, dynamic, sequential, multi-agent; live APIs plus simulated disruptions
 - **Actuators**: write TripState, emit itinerary, trigger targeted replan, ask user for missing fields
-- **Sensors**: NL request, Mapbox, Foursquare, Amadeus, WeatherAPI.com, user HITL replies, disruption events
+- **Sensors**: NL request, Mapbox, Foursquare, Gemini travel market, OpenWeatherMap, user HITL replies, disruption events
 
 ## Agent conflict protocol
 
@@ -339,7 +339,7 @@ Critic picks the cheapest-damage repair (drop activity, cheaper hotel, swap city
 
 ## Demo reliability
 
-Amadeus test inventory is weak for India. Ship `data/kerala_seed.json` (cities, activities, approx hotel/food costs, travel times). Tools try live APIs first, then fall back to seed data so Review 2 demo never dies on a 401.
+Hotel/flight APIs are thin or unavailable for arbitrary Indian hill towns. `travel_market.py` asks Gemini for local hotels and airfares; if the LLM is off, it uses `data/kerala_seed.json` or a deterministic heuristic so Review 2 never dies on a 401.
 
 ---
 
@@ -348,6 +348,6 @@ Amadeus test inventory is weak for India. Ship `data/kerala_seed.json` (cities, 
 - **PEAS**: Performance (optimization score), Environment (real APIs, dynamic disruptions), Actuators (itinerary + replan), Sensors (weather, places, transport)
 - **Agent Analysis**: 6 agents, partially observable + dynamic + multi-agent environment
 - **Algorithmic Modeling**: A* (routing), OR-Tools CSP (scheduling), multi-objective weighted scoring
-- **Tool Selection**: LangGraph (`MemorySaver`, conditional routing), LangChain `@tool`, FastAPI SSE, Mapbox, Amadeus, WeatherAPI.com, OR-Tools VRPTW, NetworkX, Foursquare Places
+- **Tool Selection**: LangGraph (`MemorySaver`, conditional routing), LangChain `@tool`, FastAPI SSE, Mapbox, Gemini travel market, OpenWeatherMap, OR-Tools VRPTW, NetworkX, Foursquare Places
 - **Multi-Agent Interaction**: Shared `TripState`, sequential specialists, Critic conflict resolution and targeted replan
 - **Demo**: Part A — normal 5-day Kerala planning; Part B — live disruption simulation with targeted replan

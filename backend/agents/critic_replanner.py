@@ -29,7 +29,7 @@ from models.schemas import (
     ValidationReport,
 )
 from orchestration.state import TripState
-from tools.amadeus_api import check_transport_disruptions
+from tools.travel_market import check_transport_disruptions
 from tools.budget_validator import validate_budget
 from tools.foursquare_api import check_attraction_availability
 from tools.schedule_validator import check_schedule_conflicts
