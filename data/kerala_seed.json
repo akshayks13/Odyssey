@@ -1,0 +1,140 @@
+{
+  "region": "Kerala, India",
+  "destinations": [
+    {
+      "name": "Kochi",
+      "coordinates": { "lat": 9.9312, "lng": 76.2673 },
+      "description": "Historic port city; Fort Kochi, backwaters gateway, colonial architecture.",
+      "tags": ["culture", "food", "shopping"],
+      "activity_scores": { "nature": 0.3, "adventure": 0.2, "food": 0.8, "nightlife": 0.6, "relaxation": 0.4, "culture": 0.9, "shopping": 0.7 }
+    },
+    {
+      "name": "Munnar",
+      "coordinates": { "lat": 10.0889, "lng": 77.0595 },
+      "description": "Hill station with tea plantations, misty valleys, and trekking trails.",
+      "tags": ["nature", "adventure", "relaxation"],
+      "activity_scores": { "nature": 0.95, "adventure": 0.75, "food": 0.4, "nightlife": 0.1, "relaxation": 0.7, "culture": 0.3, "shopping": 0.3 }
+    },
+    {
+      "name": "Thekkady",
+      "coordinates": { "lat": 9.5916, "lng": 77.1667 },
+      "description": "Periyar wildlife sanctuary, spice plantations, boating.",
+      "tags": ["nature", "adventure", "wildlife"],
+      "activity_scores": { "nature": 0.9, "adventure": 0.7, "food": 0.4, "nightlife": 0.1, "relaxation": 0.6, "culture": 0.4, "shopping": 0.3 }
+    },
+    {
+      "name": "Alleppey",
+      "coordinates": { "lat": 9.4981, "lng": 76.3388 },
+      "description": "Backwaters, houseboats, tranquil canals.",
+      "tags": ["relaxation", "nature"],
+      "activity_scores": { "nature": 0.8, "adventure": 0.2, "food": 0.5, "nightlife": 0.1, "relaxation": 0.95, "culture": 0.3, "shopping": 0.2 }
+    },
+    {
+      "name": "Vagamon",
+      "coordinates": { "lat": 9.6867, "lng": 76.9081 },
+      "description": "Rolling meadows, pine forests, paragliding.",
+      "tags": ["nature", "adventure"],
+      "activity_scores": { "nature": 0.9, "adventure": 0.85, "food": 0.3, "nightlife": 0.05, "relaxation": 0.7, "culture": 0.2, "shopping": 0.1 }
+    },
+    {
+      "name": "Kovalam",
+      "coordinates": { "lat": 8.4004, "lng": 76.9784 },
+      "description": "Beach town with lighthouse, seafood, nightlife.",
+      "tags": ["relaxation", "nightlife", "food"],
+      "activity_scores": { "nature": 0.5, "adventure": 0.3, "food": 0.7, "nightlife": 0.7, "relaxation": 0.85, "culture": 0.3, "shopping": 0.4 }
+    },
+    {
+      "name": "Wayanad",
+      "coordinates": { "lat": 11.6854, "lng": 76.132 },
+      "description": "Forests, waterfalls, caves, wildlife sanctuaries.",
+      "tags": ["nature", "adventure", "wildlife"],
+      "activity_scores": { "nature": 0.95, "adventure": 0.8, "food": 0.3, "nightlife": 0.05, "relaxation": 0.6, "culture": 0.3, "shopping": 0.1 }
+    },
+    {
+      "name": "Varkala",
+      "coordinates": { "lat": 8.7379, "lng": 76.7163 },
+      "description": "Cliffside beach, yoga retreats, sunset views.",
+      "tags": ["relaxation", "nature"],
+      "activity_scores": { "nature": 0.6, "adventure": 0.3, "food": 0.5, "nightlife": 0.4, "relaxation": 0.9, "culture": 0.3, "shopping": 0.2 }
+    }
+  ],
+  "activities": {
+    "Kochi": [
+      { "id": "kochi_fort", "name": "Fort Kochi Walk", "category": "culture", "duration_minutes": 150, "cost_inr": 0, "rating": 4.5, "opening_hour": 7, "closing_hour": 19, "preference_score": 0.8 },
+      { "id": "kochi_market", "name": "Local Spice Market", "category": "shopping", "duration_minutes": 90, "cost_inr": 500, "rating": 4.2, "opening_hour": 9, "closing_hour": 20, "preference_score": 0.6 },
+      { "id": "kochi_kathakali", "name": "Kathakali Dance Show", "category": "culture", "duration_minutes": 120, "cost_inr": 400, "rating": 4.6, "opening_hour": 18, "closing_hour": 21, "preference_score": 0.7 },
+      { "id": "kochi_chinese_nets", "name": "Chinese Fishing Nets", "category": "culture", "duration_minutes": 60, "cost_inr": 0, "rating": 4.3, "opening_hour": 6, "closing_hour": 19, "preference_score": 0.5 }
+    ],
+    "Munnar": [
+      { "id": "munnar_tea", "name": "Tea Plantation Tour", "category": "nature", "duration_minutes": 150, "cost_inr": 300, "rating": 4.7, "opening_hour": 9, "closing_hour": 17, "preference_score": 0.9 },
+      { "id": "munnar_eravikulam", "name": "Eravikulam National Park", "category": "nature", "duration_minutes": 180, "cost_inr": 500, "rating": 4.6, "opening_hour": 8, "closing_hour": 16, "preference_score": 0.9 },
+      { "id": "munnar_trek", "name": "Trekking Trail", "category": "adventure", "duration_minutes": 240, "cost_inr": 800, "rating": 4.5, "opening_hour": 7, "closing_hour": 15, "preference_score": 0.85 },
+      { "id": "munnar_view", "name": "Top Station Viewpoint", "category": "nature", "duration_minutes": 90, "cost_inr": 100, "rating": 4.4, "opening_hour": 8, "closing_hour": 18, "preference_score": 0.75 }
+    ],
+    "Thekkady": [
+      { "id": "thekkady_periyar", "name": "Periyar Wildlife Boating", "category": "nature", "duration_minutes": 150, "cost_inr": 600, "rating": 4.6, "opening_hour": 7, "closing_hour": 16, "preference_score": 0.9 },
+      { "id": "thekkady_spice", "name": "Spice Plantation Tour", "category": "nature", "duration_minutes": 120, "cost_inr": 350, "rating": 4.4, "opening_hour": 9, "closing_hour": 17, "preference_score": 0.7 },
+      { "id": "thekkady_bamboo", "name": "Bamboo Rafting", "category": "adventure", "duration_minutes": 300, "cost_inr": 1500, "rating": 4.5, "opening_hour": 7, "closing_hour": 13, "preference_score": 0.85 }
+    ],
+    "Alleppey": [
+      { "id": "alleppey_houseboat", "name": "Houseboat Backwater Cruise", "category": "relaxation", "duration_minutes": 360, "cost_inr": 6000, "rating": 4.8, "opening_hour": 8, "closing_hour": 18, "preference_score": 0.95 },
+      { "id": "alleppey_canoe", "name": "Village Canoe Ride", "category": "nature", "duration_minutes": 120, "cost_inr": 700, "rating": 4.5, "opening_hour": 8, "closing_hour": 17, "preference_score": 0.8 },
+      { "id": "alleppey_beach", "name": "Alleppey Beach Walk", "category": "relaxation", "duration_minutes": 90, "cost_inr": 0, "rating": 4.1, "opening_hour": 6, "closing_hour": 19, "preference_score": 0.6 }
+    ],
+    "Vagamon": [
+      { "id": "vagamon_paraglide", "name": "Paragliding", "category": "adventure", "duration_minutes": 60, "cost_inr": 2500, "rating": 4.7, "opening_hour": 9, "closing_hour": 16, "preference_score": 0.9 },
+      { "id": "vagamon_meadows", "name": "Vagamon Meadows Walk", "category": "nature", "duration_minutes": 120, "cost_inr": 100, "rating": 4.5, "opening_hour": 7, "closing_hour": 18, "preference_score": 0.85 },
+      { "id": "vagamon_pine", "name": "Pine Forest Walk", "category": "nature", "duration_minutes": 90, "cost_inr": 50, "rating": 4.3, "opening_hour": 7, "closing_hour": 18, "preference_score": 0.75 }
+    ],
+    "Kovalam": [
+      { "id": "kovalam_beach", "name": "Kovalam Beach", "category": "relaxation", "duration_minutes": 180, "cost_inr": 0, "rating": 4.4, "opening_hour": 6, "closing_hour": 20, "preference_score": 0.85 },
+      { "id": "kovalam_lighthouse", "name": "Lighthouse Visit", "category": "culture", "duration_minutes": 60, "cost_inr": 50, "rating": 4.2, "opening_hour": 9, "closing_hour": 17, "preference_score": 0.5 },
+      { "id": "kovalam_seafood", "name": "Seafood Beach Shack Dinner", "category": "food", "duration_minutes": 120, "cost_inr": 1200, "rating": 4.6, "opening_hour": 18, "closing_hour": 23, "preference_score": 0.75 }
+    ],
+    "Wayanad": [
+      { "id": "wayanad_falls", "name": "Soochipara Waterfalls", "category": "nature", "duration_minutes": 150, "cost_inr": 200, "rating": 4.6, "opening_hour": 8, "closing_hour": 17, "preference_score": 0.85 },
+      { "id": "wayanad_caves", "name": "Edakkal Caves Trek", "category": "adventure", "duration_minutes": 180, "cost_inr": 400, "rating": 4.5, "opening_hour": 8, "closing_hour": 16, "preference_score": 0.85 },
+      { "id": "wayanad_wildlife", "name": "Wildlife Sanctuary Safari", "category": "nature", "duration_minutes": 150, "cost_inr": 600, "rating": 4.4, "opening_hour": 6, "closing_hour": 12, "preference_score": 0.8 }
+    ],
+    "Varkala": [
+      { "id": "varkala_cliff", "name": "Varkala Cliff Walk", "category": "relaxation", "duration_minutes": 90, "cost_inr": 0, "rating": 4.6, "opening_hour": 6, "closing_hour": 19, "preference_score": 0.8 },
+      { "id": "varkala_yoga", "name": "Sunrise Yoga Session", "category": "relaxation", "duration_minutes": 60, "cost_inr": 300, "rating": 4.5, "opening_hour": 6, "closing_hour": 8, "preference_score": 0.7 },
+      { "id": "varkala_beach", "name": "Papanasam Beach", "category": "relaxation", "duration_minutes": 120, "cost_inr": 0, "rating": 4.4, "opening_hour": 6, "closing_hour": 19, "preference_score": 0.75 }
+    ]
+  },
+  "hotels": {
+    "Kochi": [ { "name": "Fort Heritage Stay", "price_per_night_inr": 3200, "rating": 4.4 }, { "name": "Backwater Budget Inn", "price_per_night_inr": 1500, "rating": 3.9 } ],
+    "Munnar": [ { "name": "Tea County Resort", "price_per_night_inr": 3800, "rating": 4.5 }, { "name": "Misty Hills Homestay", "price_per_night_inr": 1800, "rating": 4.1 } ],
+    "Thekkady": [ { "name": "Periyar Jungle Resort", "price_per_night_inr": 3500, "rating": 4.3 }, { "name": "Spice Grove Homestay", "price_per_night_inr": 1600, "rating": 4.0 } ],
+    "Alleppey": [ { "name": "Backwater Houseboat Stay", "price_per_night_inr": 6000, "rating": 4.7 }, { "name": "Canal View Budget Hotel", "price_per_night_inr": 1700, "rating": 3.9 } ],
+    "Vagamon": [ { "name": "Meadow View Cottage", "price_per_night_inr": 2800, "rating": 4.3 }, { "name": "Pine Ridge Homestay", "price_per_night_inr": 1400, "rating": 4.0 } ],
+    "Kovalam": [ { "name": "Lighthouse Beach Resort", "price_per_night_inr": 4200, "rating": 4.4 }, { "name": "Shore Budget Stay", "price_per_night_inr": 1900, "rating": 3.8 } ],
+    "Wayanad": [ { "name": "Forest Canopy Resort", "price_per_night_inr": 3600, "rating": 4.4 }, { "name": "Wayanad Budget Homestay", "price_per_night_inr": 1500, "rating": 3.9 } ],
+    "Varkala": [ { "name": "Cliffside Yoga Resort", "price_per_night_inr": 3000, "rating": 4.5 }, { "name": "Papanasam Budget Stay", "price_per_night_inr": 1400, "rating": 3.9 } ]
+  },
+  "food_cost_per_person_per_day_inr": {
+    "budget": 500,
+    "mid": 900,
+    "premium": 1800
+  },
+  "travel_legs": [
+    { "origin": "Kochi", "destination": "Munnar", "mode": "road", "distance_km": 130, "duration_hours": 4.0, "cost_inr": 900 },
+    { "origin": "Kochi", "destination": "Alleppey", "mode": "road", "distance_km": 60, "duration_hours": 1.5, "cost_inr": 500 },
+    { "origin": "Kochi", "destination": "Thekkady", "mode": "road", "distance_km": 190, "duration_hours": 5.0, "cost_inr": 1200 },
+    { "origin": "Kochi", "destination": "Vagamon", "mode": "road", "distance_km": 110, "duration_hours": 3.5, "cost_inr": 800 },
+    { "origin": "Kochi", "destination": "Kovalam", "mode": "road", "distance_km": 220, "duration_hours": 5.5, "cost_inr": 1400 },
+    { "origin": "Kochi", "destination": "Wayanad", "mode": "road", "distance_km": 270, "duration_hours": 6.5, "cost_inr": 1600 },
+    { "origin": "Kochi", "destination": "Varkala", "mode": "road", "distance_km": 160, "duration_hours": 4.0, "cost_inr": 1000 },
+    { "origin": "Munnar", "destination": "Thekkady", "mode": "road", "distance_km": 100, "duration_hours": 3.0, "cost_inr": 700 },
+    { "origin": "Munnar", "destination": "Vagamon", "mode": "road", "distance_km": 70, "duration_hours": 2.5, "cost_inr": 600 },
+    { "origin": "Munnar", "destination": "Alleppey", "mode": "road", "distance_km": 160, "duration_hours": 4.5, "cost_inr": 1000 },
+    { "origin": "Thekkady", "destination": "Alleppey", "mode": "road", "distance_km": 140, "duration_hours": 3.5, "cost_inr": 900 },
+    { "origin": "Thekkady", "destination": "Vagamon", "mode": "road", "distance_km": 90, "duration_hours": 2.8, "cost_inr": 650 },
+    { "origin": "Vagamon", "destination": "Alleppey", "mode": "road", "distance_km": 120, "duration_hours": 3.2, "cost_inr": 750 },
+    { "origin": "Alleppey", "destination": "Kovalam", "mode": "road", "distance_km": 160, "duration_hours": 4.0, "cost_inr": 1000 },
+    { "origin": "Alleppey", "destination": "Varkala", "mode": "road", "distance_km": 120, "duration_hours": 3.0, "cost_inr": 800 },
+    { "origin": "Kovalam", "destination": "Varkala", "mode": "road", "distance_km": 55, "duration_hours": 1.3, "cost_inr": 450 },
+    { "origin": "Kochi", "destination": "Kochi", "mode": "road", "distance_km": 0, "duration_hours": 0, "cost_inr": 0 },
+    { "origin": "Wayanad", "destination": "Munnar", "mode": "road", "distance_km": 280, "duration_hours": 7.0, "cost_inr": 1700 }
+  ]
+}

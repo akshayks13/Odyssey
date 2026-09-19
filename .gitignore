@@ -1,0 +1,20 @@
+# Odyssey
+.DS_Store
+.env
+.env.local
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+backend/.venv/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+*.db
+*.sqlite
+.coverage
+htmlcov/
+dist/
+build/
+rubrics.txt
