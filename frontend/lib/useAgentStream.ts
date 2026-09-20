@@ -16,12 +16,7 @@ const initialStatuses = (): Record<string, AgentStatus> =>
   Object.fromEntries(AGENT_ORDER.map((a) => [a, "pending" as AgentStatus])) as Record<string, AgentStatus>;
 
 /**
- * Reads a fetch() response body as an SSE-style stream ("data: {...}\n\n"
- * frames) and drives the agent-timeline UI. Uses startTransition so a burst
- * of fast agent updates doesn't jank the rest of the page.
- *
- * Planning: POST /api/plan → GET /api/stream?threadId= (Next.js TransformStream proxy).
- * Disruption: POST /api/disrupt → GET /api/stream (does not mark unrun agents done).
+ * Consume the planning SSE stream and update the agent timeline.
  */
 export function useAgentStream() {
   const [state, setState] = useState<AgentStreamState>({

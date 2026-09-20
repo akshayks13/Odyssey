@@ -5,10 +5,7 @@ export const dynamic = "force-dynamic";
 
 const BACKEND = process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
-/**
- * Node.js TransformStream proxy for FastAPI SSE.
- * Forwards `req.signal` so a tab close aborts the upstream graph run.
- */
+/** Proxy FastAPI SSE; abort upstream when the tab closes. */
 export async function GET(req: NextRequest) {
   const threadId = req.nextUrl.searchParams.get("threadId");
   if (!threadId) {

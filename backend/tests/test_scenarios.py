@@ -1,10 +1,4 @@
-"""End-to-end scenario tests against the compiled LangGraph.
-
-These cover the three demo scenarios required by the plan:
-  1. Normal 5-day Kerala planning
-  2. Weather/closure disruption with targeted replan
-  3. Budget overrun / budget-cut disruption
-"""
+"""End-to-end graph tests: happy path, weather closure, and budget cut."""
 from __future__ import annotations
 
 from models.schemas import Disruption, DisruptionType

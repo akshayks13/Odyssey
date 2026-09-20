@@ -1,12 +1,4 @@
-"""SSE streaming helpers — LangGraph `astream` (messages / updates / custom)
-plus `astream_events(version="v2")` metadata mapped onto typed JSON events
-the frontend timeline can render.
-
-LangGraph 0.2.60 accepts `stream_mode=["messages","updates","custom"]` on
-`graph.astream`. The plan's `version="v2"` flag lives on `astream_events`;
-we merge both onto one graph run by using astream with those modes (one
-execution) and translating chunks into the SSE event types from the plan.
-"""
+"""Map LangGraph `astream` chunks onto SSE events for the timeline UI."""
 from __future__ import annotations
 
 import json
@@ -99,19 +91,12 @@ def _compact_node_data(node_output: dict | None) -> dict:
 
 
 async def stream_graph_run(graph: Any, thread_id: str, input_state: dict | None, config: dict) -> AsyncGenerator[str, None]:
-    """Stream one graph execution (fresh run or a resume after disruption).
-
-    Uses `graph.astream(..., stream_mode=["messages","updates","custom"], subgraphs=True)`.
-    `version="v2"` is the astream_events flag in this LangGraph release; we
-    still emit the same SSE types the plan specifies (`step_start`,
-    `tool_result`, `step_complete`, `done`, `error`).
-    """
+    """Stream one graph run as SSE events."""
     yield sse_event({"type": "init", "thread_id": thread_id})
     started: set[str] = set()
     try:
         astream_fn = graph.astream
         try:
-            # Honour the plan's signature when a newer LangGraph accepts version=.
             stream = astream_fn(
                 input_state,
                 config=config,

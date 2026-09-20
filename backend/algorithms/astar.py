@@ -1,24 +1,4 @@
-"""
-Weighted A* search for destination visit ORDER.
-
-Why this exists alongside Mapbox: Mapbox/Google give you the road route
-between two *fixed* points (A -> B). They do not decide the *order* in which
-to visit N candidate cities over a multi-day trip — that is a search problem
-over permutations, solved here with A*.
-
-State space:   (current_city, frozenset(visited_cities), elapsed_hours_today)
-g(state):      cumulative travel time (hours) so far
-h(state):      admissible lower bound = min travel time from `current` to
-               any unvisited required destination (relaxation of the true
-               remaining-tour cost, so it never overestimates)
-Daily cap:     hops that would exceed `max_daily_travel_hours` start a new
-               day (elapsed resets); a single hop longer than the cap is
-               penalized so A* prefers orderings that stay under the limit.
-Anytime behavior: if the search exceeds `max_expansions` nodes, an
-escalating weight epsilon is applied to the heuristic
-(f = g + (1+eps)*h), biasing search towards greedy completion so a full
-itinerary is always returned even for larger destination sets.
-"""
+"""Weighted A* over visit order: state = (city, visited set, elapsed hours today)."""
 from __future__ import annotations
 
 import heapq

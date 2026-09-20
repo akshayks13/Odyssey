@@ -1,8 +1,7 @@
-"""Central configuration — reads environment variables with safe defaults.
+"""Environment and API keys.
 
-All external API calls are optional: if a key is missing, the corresponding
-tool transparently falls back to `data/kerala_seed.json` so the demo never
-breaks on a missing/invalid credential.
+Missing keys skip the matching live API; tools then use heuristics or
+bundled seed rows when the city is in that file.
 """
 from __future__ import annotations
 
@@ -20,12 +19,12 @@ SEED_DATA_PATH = PROJECT_ROOT / "data" / "kerala_seed.json"
 
 # --- LLM ---------------------------------------------------------------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
-# Tests / CI set this so the suite never bills a live model.
+# Tests / CI skip live model calls.
 LLM_DISABLED = os.getenv("ODYSSEY_DISABLE_LLM", "").lower() in {"1", "true", "yes"}
 
 # --- LangSmith observability -------------------------------------------

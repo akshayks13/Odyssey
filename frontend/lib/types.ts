@@ -24,6 +24,12 @@ export interface RouteLeg {
   duration_hours: number;
   cost_inr: number;
   available: boolean;
+  summary?: string | null;
+  airline?: string | null;
+  origin_iata?: string | null;
+  destination_iata?: string | null;
+  source?: string | null;
+  reason?: string | null;
 }
 
 export interface Route {
@@ -78,6 +84,7 @@ export interface ItineraryDay {
   destination: string;
   items: ScheduledItem[];
   travel_leg?: RouteLeg | null;
+  overnight_hotel?: Hotel | null;
 }
 
 export interface Itinerary {

@@ -1,12 +1,4 @@
-"""Mapbox tools: geocoding and road directions/travel-time matrix.
-
-Used by:
-- Trip Analyst (geocode_location)
-- Mobility Agent (get_directions, build travel graph)
-
-Falls back to the Kerala seed dataset (haversine distance + assumed road
-speed) whenever MAPBOX_API_KEY is missing or the API call fails.
-"""
+"""Mapbox geocoding, driving directions, and travel-time matrices."""
 from __future__ import annotations
 
 import math
@@ -23,6 +15,21 @@ MAPBOX_MATRIX_URL = "https://api.mapbox.com/directions-matrix/v1/mapbox/driving/
 MAPBOX_STATIC_URL = "https://api.mapbox.com/styles/v1/mapbox/outdoors-v12/static/{lng},{lat},12,0/600x400"
 
 _AVG_ROAD_SPEED_KMH = 40.0  # used when we only have haversine distance
+
+_KNOWN_COORDS = {
+    "delhi": (28.6139, 77.2090),
+    "new delhi": (28.6139, 77.2090),
+    "mumbai": (19.0760, 72.8777),
+    "bangalore": (12.9716, 77.5946),
+    "bengaluru": (12.9716, 77.5946),
+    "chennai": (13.0827, 80.2707),
+    "hyderabad": (17.3850, 78.4867),
+    "goa": (15.2993, 74.1240),
+    "kochi": (9.9312, 76.2673),
+    "cochin": (9.9312, 76.2673),
+    "trivandrum": (8.5241, 76.9366),
+    "thiruvananthapuram": (8.5241, 76.9366),
+}
 
 
 def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -60,8 +67,8 @@ def geocode_location(place_name: str) -> dict:
         except Exception:
             pass
 
-    # Fallback: seed data lookup (works well for Kerala destinations)
-    seed = get_destination_seed(place_name)
+    city_key = place_name.split(",")[0].strip()
+    seed = get_destination_seed(place_name) or get_destination_seed(city_key)
     if seed:
         return {
             "name": seed["name"],
@@ -69,8 +76,12 @@ def geocode_location(place_name: str) -> dict:
             "lng": seed["coordinates"]["lng"],
             "source": "seed",
         }
-    # Last resort: Kochi as regional anchor
-    return {"name": place_name, "lat": 9.9312, "lng": 76.2673, "source": "seed_default"}
+    known = _KNOWN_COORDS.get(place_name.strip().lower()) or _KNOWN_COORDS.get(city_key.lower())
+    if known:
+        lat, lng = known
+        return {"name": city_key, "lat": lat, "lng": lng, "source": "known_city"}
+
+    return {"name": place_name, "lat": 21.1466, "lng": 79.0889, "source": "approx"}
 
 
 @tool(parse_docstring=True)
@@ -110,7 +121,6 @@ def get_directions(origin: str, destination: str) -> dict:
         except Exception:
             pass
 
-    # Fallback: seed travel_legs table, else haversine estimate
     leg = get_travel_leg(origin, destination)
     if leg:
         return {

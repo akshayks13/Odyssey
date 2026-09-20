@@ -1,17 +1,4 @@
-"""
-LangGraph wiring for Odyssey.
-
-Pipeline (locked architecture — see project plan):
-
-    Trip Analyst -> Destination -> Mobility -> Budget -> Itinerary Architect -> Critic
-                                                                                   |
-                       (targeted replan: only the broken specialist re-runs) <-----+
-
-Mobility runs before Budget (not in parallel) so the transport cost from the
-chosen route is available when Budget computes the total. Running Mobility
-and Budget in parallel would let Architect fire twice on the first pass and
-can deadlock on a single-agent targeted replan.
-"""
+"""LangGraph pipeline: Analyst → Destination → Mobility → Budget → Architect → Critic."""
 from __future__ import annotations
 
 from langgraph.checkpoint.memory import MemorySaver

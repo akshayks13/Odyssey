@@ -1,8 +1,4 @@
-"""SQLite persistence for finalized itineraries.
-
-MemorySaver keeps live LangGraph checkpoints in-process. This table is the
-durable copy used by GET /api/itinerary/{thread_id} after a restart.
-"""
+"""SQLite store for finalized itineraries (used after a process restart)."""
 from __future__ import annotations
 
 import json

@@ -1,16 +1,4 @@
-"""
-OR-Tools VRPTW day scheduler (`pywrapcp.RoutingModel`).
-
-Nodes = depot (hotel) + activities + optional meal stops.
-Arcs = travel-time matrix (Mapbox Distance Matrix when a key is present,
-haversine/default otherwise). Time windows = opening hours. Service times
-= activity durations. Soft meal windows are extra nodes the solver *prefers*
-to visit (disjunction penalty) but may drop if the day is packed.
-
-Cumul variables are minutes from midnight so opening-hour windows (e.g. 09:00)
-line up with depot start (08:00). Capacity is the latest allowed clock time,
-not the length of the day.
-"""
+"""OR-Tools VRPTW scheduler for a single day."""
 from __future__ import annotations
 
 from ortools.constraint_solver import pywrapcp

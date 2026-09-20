@@ -1,9 +1,4 @@
-"""
-Pydantic schemas shared across all Odyssey agents and tools.
-
-These models flow through the LangGraph `TripState` (see orchestration/state.py).
-Keeping them in one module avoids circular imports between agents/tools/algorithms.
-"""
+"""Pydantic models shared by agents and tools."""
 from __future__ import annotations
 
 from enum import Enum
@@ -47,6 +42,7 @@ class TripSpec(BaseModel):
     preferences: PreferenceWeights = Field(default_factory=PreferenceWeights)
     constraints: TripConstraints = Field(default_factory=TripConstraints)
     start_date: Optional[str] = None  # ISO date, optional
+    origin_city: Optional[str] = None
     needs_clarification: list[str] = Field(default_factory=list)
     raw_input: str = ""
 
@@ -104,6 +100,12 @@ class RouteLeg(BaseModel):
     duration_hours: float = 0.0
     cost_inr: float = 0.0
     available: bool = True
+    summary: Optional[str] = None
+    airline: Optional[str] = None
+    origin_iata: Optional[str] = None
+    destination_iata: Optional[str] = None
+    source: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class Route(BaseModel):
@@ -170,6 +172,7 @@ class ItineraryDay(BaseModel):
     destination: str
     items: list[ScheduledItem] = Field(default_factory=list)
     travel_leg: Optional[RouteLeg] = None
+    overnight_hotel: Optional[Hotel] = None
 
 
 class Itinerary(BaseModel):

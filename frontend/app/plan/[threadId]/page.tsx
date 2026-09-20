@@ -25,19 +25,28 @@ export default function PlanPage() {
     const key = `odyssey:${threadId}:message`;
     const pendingMessage = sessionStorage.getItem(key);
 
+    const planningKey = `odyssey:${threadId}:planning`;
     if (pendingMessage) {
       sessionStorage.removeItem(key);
+      sessionStorage.setItem(planningKey, pendingMessage);
       startPlan(pendingMessage, threadId);
-    } else {
-      fetchItinerary(threadId)
-        .then((data) => setPlanData({ type: "done", ...data }))
-        .catch((e) => setLoadError(e.message));
+      return;
     }
+    if (sessionStorage.getItem(planningKey)) {
+      return;
+    }
+    fetchItinerary(threadId)
+      .then((data) => setPlanData({ type: "done", ...data }))
+      .catch((e) => setLoadError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
   useEffect(() => {
-    if (latest?.type === "done") setPlanData(latest);
+    if (latest?.type === "done") {
+      sessionStorage.removeItem(`odyssey:${threadId}:planning`);
+      setPlanData(latest);
+      setLoadError(null);
+    }
   }, [latest]);
 
   const showResults = planData && planData.itinerary;
@@ -103,7 +112,12 @@ export default function PlanPage() {
                 disabled={isStreaming}
               />
 
-              {planData!.itinerary && <ItineraryView itinerary={planData!.itinerary} />}
+              {planData!.itinerary && (
+                <ItineraryView
+                  itinerary={planData!.itinerary}
+                  hotels={planData!.budget?.selected_hotels || []}
+                />
+              )}
               {planData!.budget && <BudgetChart budget={planData!.budget} />}
             </>
           )}

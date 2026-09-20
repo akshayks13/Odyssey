@@ -1,13 +1,10 @@
-"""Deterministic cost calculation tools used by the Budget Agent.
-
-No LLM reasoning here by design — arithmetic must be exact (see the
-LLM-vs-tool split in the architecture plan).
-"""
+"""Activity, food, and transport cost totals."""
 from __future__ import annotations
 
 from langchain_core.tools import tool
 
 from tools.seed_data import get_food_cost, get_travel_leg
+from tools.travel_market import _city_iata
 
 
 @tool(parse_docstring=True)
@@ -61,7 +58,7 @@ def calculate_route_cost(leg_costs_inr: list[float], travellers: int) -> dict:
 
 @tool(parse_docstring=True)
 def check_transport_availability(origin: str, destination: str, mode: str = "road") -> dict:
-    """Rules engine for bus/train/taxi/air availability between two places.
+    """Whether a transport mode is available between two places.
 
     Args:
         origin: Origin city name.
@@ -75,16 +72,31 @@ def check_transport_availability(origin: str, destination: str, mode: str = "roa
     if origin.strip().lower() == destination.strip().lower():
         return {"available": False, "mode": mode, "reason": "same city"}
     if mode == "air":
+        o, d = _city_iata(origin), _city_iata(destination)
+        if not o or not d or o == d:
+            return {
+                "available": False,
+                "mode": "air",
+                "reason": "Intra-region or unknown airports — use road",
+                "origin_iata": o,
+                "destination_iata": d,
+            }
         return {
-            "available": False,
+            "available": True,
             "mode": "air",
-            "reason": "Intra-region hops use road; call search_flights only for distinct IATA cities",
+            "reason": "distinct airports — Mobility may quote flights",
+            "origin_iata": o,
+            "destination_iata": d,
         }
     if mode == "rail":
-        hill = {"munnar", "thekkady", "vagamon", "wayanad"}
-        if origin.strip().lower() in hill or destination.strip().lower() in hill:
-            return {"available": False, "mode": "rail", "reason": "no direct rail to hill station — use road"}
-        return {"available": True, "mode": "rail", "reason": "regional rail corridor"}
+        o, d = _city_iata(origin), _city_iata(destination)
+        if not o or not d or o == d:
+            return {
+                "available": False,
+                "mode": "rail",
+                "reason": "no intercity rail signal — use Mapbox road",
+            }
+        return {"available": True, "mode": "rail", "reason": "intercity rail corridor"}
     leg = get_travel_leg(origin, destination)
     if leg:
         return {

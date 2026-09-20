@@ -1,11 +1,9 @@
-"""Shared fixtures for Odyssey tests. All tests run without live API keys
-so they stay deterministic and offline-friendly."""
+"""Test fixtures. Live API keys are cleared so runs stay offline."""
 from __future__ import annotations
 
 import os
 
 os.environ["ODYSSEY_DISABLE_LLM"] = "1"
-# Keep pytest offline even when backend/.env has live keys.
 os.environ["OPENWEATHER_API_KEY"] = ""
 os.environ["FOURSQUARE_API_KEY"] = ""
 os.environ["MAPBOX_API_KEY"] = ""

@@ -1,7 +1,4 @@
-"""FastAPI application entrypoint.
-
-Run locally with:  uvicorn api.main:app --reload --port 8000
-"""
+"""FastAPI entrypoint."""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -16,8 +13,6 @@ from orchestration.graph import get_graph
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Compile the LangGraph StateGraph once at startup and reuse it across
-    # every request (MemorySaver keeps per-thread_id state in-process).
     get_graph()
     yield
 

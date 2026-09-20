@@ -104,9 +104,6 @@ async def inject_disruption(req: DisruptRequest):
     )
     existing_disruptions = existing_state.values.get("disruptions", [])
 
-    # `as_node="itinerary_architect"` (a direct predecessor of the Critic in
-    # the graph) makes LangGraph resume execution AT the Critic with this
-    # new state merged in, so the Critic actually re-evaluates and routes.
     graph.update_state(
         config,
         {"disruptions": [*existing_disruptions, disruption], "iteration_count": 0},
@@ -142,6 +139,6 @@ async def health():
             "mapbox": bool(MAPBOX_API_KEY),
             "foursquare": bool(FOURSQUARE_API_KEY),
             "weather": bool(OPENWEATHER_API_KEY),
-            "hotels_flights": "gemini_generated",
+            "hotels_flights": "llm",
         },
     }

@@ -1,10 +1,17 @@
-"""
-Agent 3 — Budget Optimization
+"""Budget — price hotels, food, activities, and transport against the ceiling.
 
-Runs AFTER Mobility so the transport cost from the chosen route is included
-in the total. Prices hotels + food + activities + transport, validates
-against the ceiling, and (LLM-guided) proposes trade-offs when over budget.
-Also reacts to injected budget-cut disruptions.
+Role: money optimizer. Runs after Mobility so transport cost is already known.
+Does not reorder cities or build the hour schedule.
+
+Decides: hotel tier (budget/mid/premium); whether to pick the cheapest hotel
+in each city; which activities to drop if over budget.
+
+Computes: deterministic line items and `validate_budget`. Cheapest-damage cuts
+keep at least one activity per city.
+
+Uses: `search_hotels`, `search_hotel_offers` (Gemini then Groq market quotes),
+`estimate_food_costs`, `validate_budget`, `generate_tradeoff_options`.
+`calculate_activity_costs` is invoked in-node, not bound to the LLM.
 """
 from __future__ import annotations
 
@@ -48,7 +55,7 @@ def budget_agent_node(state: TripState) -> dict:
     activities_by_dest = state.get("candidate_activities", {})
     disruptions = state.get("disruptions", [])
 
-    # Apply any injected budget-cut disruption to the ceiling before validating.
+    # Apply budget-cut disruptions to the ceiling first.
     ceiling = spec.budget_inr
     for d in disruptions:
         if d.type == DisruptionType.BUDGET_CUT and d.new_budget_inr:
@@ -64,12 +71,18 @@ def budget_agent_node(state: TripState) -> dict:
         get_llm(),
         tools=[search_hotels, search_hotel_offers, estimate_food_costs, validate_budget, generate_tradeoff_options],
         system=(
-            "You are Odyssey's Budget agent. Call tools to inspect hotels, food cost and "
-            "whether the current plan fits the ceiling. Reply ONLY with JSON: "
-            "{\"tier\": \"budget|mid|premium\", \"prefer_cheapest_hotels\": true, "
-            "\"drop_activities\": [\"Activity Name\", ...], \"reasoning\": \"...\"}. "
+            "You are Odyssey's Budget agent — the money optimizer, not the scheduler. "
+            "ROLE: fit hotels, food, activities, and transport under the ceiling. "
+            "YOU DECIDE: hotel tier, whether to pick the cheapest hotel in each city, "
+            "and which activities to drop if still over budget. "
+            "YOU MUST NOT: change city order, invent rupee totals (tools compute those), "
+            "or build the day plan. "
+            "Call tools to inspect hotels, food, and whether the plan fits. "
             "Only drop activities if over budget. Prefer cheaper hotels before dropping "
-            "high-preference activities."
+            "high-preference activities. "
+            "Reply ONLY with JSON: "
+            "{\"tier\": \"budget|mid|premium\", \"prefer_cheapest_hotels\": true, "
+            "\"drop_activities\": [\"Activity Name\", ...], \"reasoning\": \"...\"}."
         ),
         user=(
             f"Ceiling INR {ceiling}, travellers {spec.travellers}, days {spec.duration_days}, "
@@ -131,15 +144,10 @@ def budget_agent_node(state: TripState) -> dict:
     transport_cost = route.total_cost_inr if route else 0.0
     fixed_costs = hotel_total + food_result["total_inr"] + transport_cost
 
-    # Working copy of activities we can trim if over budget — this is the
-    # "cheapest-damage repair" the Critic's conflict protocol expects Budget
-    # to perform: drop the lowest-preference, highest-cost activities first,
-    # never leaving a selected destination with zero activities.
     trimmed_activities = {name: list(acts) for name, acts in activities_by_dest.items()}
     dropped: list[str] = []
     dropped_ids: list[str] = []
 
-    # Honour explicit LLM drop list first (cheapest-damage choices the model made).
     if drop_names:
         for dest, acts in list(trimmed_activities.items()):
             keep = []
@@ -162,9 +170,6 @@ def budget_agent_node(state: TripState) -> dict:
     validation = validate_budget.invoke({"total_inr": total, "ceiling_inr": ceiling})
 
     if not validation["within_budget"]:
-        # Sort all (destination, activity) pairs: lowest preference score
-        # first, then highest cost first — the "least valuable, most
-        # expensive" items are dropped first to close the gap fastest.
         removable = [
             (dest, act)
             for dest, acts in trimmed_activities.items()

@@ -1,10 +1,4 @@
-"""Deterministic preference-matching tool.
-
-Computes weighted cosine similarity between a user's preference vector and
-a destination/activity's category-score vector. Used by the Destination
-Agent to rank candidates, and by the Itinerary Architect / Critic for the
-multi-objective score.
-"""
+"""Weighted cosine match between user preferences and place category scores."""
 from __future__ import annotations
 
 import math

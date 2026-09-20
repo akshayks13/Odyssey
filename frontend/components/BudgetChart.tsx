@@ -41,6 +41,24 @@ export function BudgetChart({ budget }: { budget: BudgetBreakdown }) {
           </Bar>
         </BarChart>
       </ResponsiveContainer>
+      {budget.selected_hotels.length > 0 && (
+        <div className="mt-4 border-t border-line pt-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Place to stay</p>
+          <ul className="mt-2 space-y-2">
+            {budget.selected_hotels.map((hotel) => (
+              <li key={`${hotel.destination}-${hotel.name}`} className="flex items-baseline justify-between gap-3 text-sm">
+                <span className="text-ink">
+                  {hotel.name}
+                  <span className="ml-2 text-xs text-muted">{hotel.destination}</span>
+                </span>
+                <span className="shrink-0 text-muted">
+                  {hotel.rating.toFixed(1)}★ · ₹{hotel.price_per_night_inr.toLocaleString("en-IN")}/night
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {budget.tradeoff_suggestions.length > 0 && (
         <div className="mt-3 rounded-2xl bg-wash p-3 text-sm text-ink">
           <p className="font-medium">Suggestions</p>

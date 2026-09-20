@@ -1,8 +1,4 @@
-"""OpenWeatherMap tools: current weather + 5-day / 3-hour forecast.
-
-Used by Destination Agent (to flag rain risk when ranking destinations)
-and Critic (to detect weather disruptions against the built itinerary).
-"""
+"""OpenWeatherMap current conditions and 5-day forecast."""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
@@ -15,23 +11,15 @@ from config import OPENWEATHER_API_KEY
 WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
 FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
 
-# Kerala hill stations get heavy monsoon rain June-Sept; used as a
-# deterministic offline fallback so the demo is reproducible without a key.
-_MONSOON_RISK_DESTINATIONS = {"Munnar", "Thekkady", "Vagamon", "Wayanad"}
 _WET = {"Rain", "Thunderstorm", "Drizzle", "Snow"}
 
 
 def _seed_forecast(destination: str) -> dict:
-    risky = destination in _MONSOON_RISK_DESTINATIONS
     return {
         "condition": "Partly cloudy",
-        "rain_risk": risky,
-        "summary": (
-            f"{destination} has monsoon rain risk in this season"
-            if risky
-            else f"{destination} generally clear this season"
-        ),
-        "source": "seed_climate_default",
+        "rain_risk": False,
+        "summary": f"{destination}: live weather unavailable, assuming fair conditions",
+        "source": "seed_default",
     }
 
 
@@ -107,21 +95,21 @@ def get_weather_forecast(destination: str, day_offset: int = 0) -> dict:
         dict with condition, rain_risk (bool), summary, source.
     """
     if OPENWEATHER_API_KEY:
-        query = f"{destination},IN"
+        from tools.mapbox_api import geocode_location
+
+        geo = geocode_location.invoke({"place_name": destination})
+        params = {
+            "lat": geo["lat"],
+            "lon": geo["lng"],
+            "units": "metric",
+            "appid": OPENWEATHER_API_KEY,
+        }
         try:
             if day_offset <= 0:
-                resp = httpx.get(
-                    WEATHER_URL,
-                    params={"q": query, "units": "metric", "appid": OPENWEATHER_API_KEY},
-                    timeout=5.0,
-                )
+                resp = httpx.get(WEATHER_URL, params=params, timeout=5.0)
                 resp.raise_for_status()
                 return _from_current(resp.json())
-            resp = httpx.get(
-                FORECAST_URL,
-                params={"q": query, "units": "metric", "appid": OPENWEATHER_API_KEY},
-                timeout=5.0,
-            )
+            resp = httpx.get(FORECAST_URL, params=params, timeout=5.0)
             resp.raise_for_status()
             parsed = _from_forecast_slots(resp.json().get("list") or [], day_offset)
             if parsed:
@@ -136,8 +124,8 @@ def get_weather_forecast(destination: str, day_offset: int = 0) -> dict:
 def check_weather_disruptions(destinations: list[str]) -> dict:
     """Cross-reference OpenWeatherMap rain risk against itinerary destinations.
 
-    Live rain_risk is reported; the seed monsoon default is informational
-    only so offline Kerala demos are not forced into a replan.
+    Live rain_risk is reported; the offline default is informational only
+    so missing OpenWeather keys do not force a replan.
 
     Args:
         destinations: Destination names appearing in the itinerary.

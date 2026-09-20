@@ -1,8 +1,7 @@
-"""Loader for the bundled Kerala fallback dataset (data/kerala_seed.json).
+"""Loader for `data/kerala_seed.json`.
 
-Every live-API tool tries the real API first and falls back to this seed
-data on any failure (missing key, timeout, non-200, empty result) so demos
-never die on a bad credential or an API with thin India coverage.
+Used when a live lookup has no row for that city (missing key, failed
+request, or a city that is actually in the bundled set).
 """
 from __future__ import annotations
 

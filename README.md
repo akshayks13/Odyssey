@@ -21,16 +21,18 @@ User
 
 ## What each agent does
 
-Every specialist is a LangGraph node. When `GEMINI_API_KEY` or `GROQ_API_KEY` is set, that node runs the same ReAct loop (`llm.bind_tools` → tool calls → JSON decision, up to 6 rounds). The model **chooses**; deterministic tools and algorithms **compute**. With no LLM key (or `ODYSSEY_DISABLE_LLM=1` in tests), the same tools still run on a heuristic path so the demo and pytest stay offline.
+Every specialist is a LangGraph node. When `GEMINI_API_KEY` or `GROQ_API_KEY` is set, that node runs the same ReAct loop (`llm.bind_tools` → tool calls → JSON decision, up to 6 rounds). The model **chooses**; deterministic tools and algorithms **compute**. With no LLM key (or `ODYSSEY_DISABLE_LLM=1` in tests), the same tools still run on a heuristic path so tests stay offline.
 
-| # | Agent | What it does | LLM decision | LangChain tools bound | Algorithm (not an LLM tool) |
-|---|---|---|---|---|---|
-| 1 | **Trip Analyst** | Natural language → `TripSpec` (region, days, travellers, budget, preference weights, pace) | Extract + fill missing fields; must geocode and validate | **2** — `geocode_location`, `validate_trip_schema` | Regex/keyword extractor if no LLM |
-| 2 | **Destination Discovery** | Rank cities and activities; drop closed/weather-risky places on replan | Which cities to keep (never a disrupted city) | **5** — `search_destinations`, `search_attractions`, `get_weather_forecast`, `score_preference_match`, `get_place_photos` | Weighted cosine preference score |
-| 3 | **Mobility & Routing** | Visit **order** + per-leg time/cost; avoid transport disruptions | Which selected city is the start / gateway | **4** — `get_directions`, `search_flights`, `check_transport_availability`, `calculate_route_cost` | NetworkX graph + weighted A* (`elapsed_time`, daily travel cap) |
-| 4 | **Budget Optimization** | Hotels + food + activities + transport vs ceiling; cheapest-damage cuts | Hotel tier, whether to pick cheapest hotels, which activities to drop | **5** — `search_hotels`, `search_hotel_offers`, `estimate_food_costs`, `validate_budget`, `generate_tradeoff_options` | Deterministic totals; `calculate_activity_costs` is invoked in-node (not bound to the LLM) |
-| 5 | **Itinerary Architect** | Day-by-day hour schedule with meals | Relaxed / moderate / packed pace | **3** — `get_opening_hours`, `validate_time_windows`, `travel_time_matrix` | OR-Tools VRPTW (`pywrapcp.RoutingModel`) + multi-objective score |
-| 6 | **Critic & Replanner** | Validate the draft; if invalid, re-invoke **one** specialist (max 3 loops) | Which of destination / mobility / budget / architect to call | **5** — `validate_budget`, `check_schedule_conflicts`, `check_transport_disruptions`, `check_attraction_availability`, `check_weather_disruptions` | Severity sort + LangGraph conditional edges |
+Full role / decides / computes / tools cards (kept in sync with the code) are in [`PLAN.md`](PLAN.md#the-6-agents). Each agent file also starts with that contract.
+
+| # | Agent | Role | Decides (LLM) | Must not | Tools bound | Computes |
+|---|---|---|---|---|---|---|
+| 1 | **Trip Analyst** | Parser | Region, origin (arrival only), days, budget, prefs | Pick sights, hotels, or a day plan | `geocode_location`, `validate_trip_schema` | Regex heuristic if no LLM |
+| 2 | **Destination Discovery** | Explorer | Which cities to keep (not origin, not disrupted) | Order the route or book hotels | `search_destinations`, `search_attractions`, `get_weather_forecast`, `score_preference_match`, `get_place_photos` | Cosine score; attractions per city |
+| 3 | **Mobility & Routing** | Mover | Start city + hop mode label | Add cities or invent order | `quote_transport`, `search_flights`, `check_transport_availability`, `calculate_route_cost` | Mapbox road graph + weighted A* |
+| 4 | **Budget Optimization** | Money | Hotel tier, cheapest vs rated, activity cuts | Reorder cities or invent rupee totals | `search_hotels`, `search_hotel_offers`, `estimate_food_costs`, `validate_budget`, `generate_tradeoff_options` | Line items vs ceiling |
+| 5 | **Itinerary Architect** | Scheduler | Pace (relaxed / moderate / packed) | Reorder cities or pick hotels | `get_opening_hours`, `travel_time_matrix`, `validate_time_windows` | OR-Tools VRPTW + score |
+| 6 | **Critic & Replanner** | Coordinator | Which one specialist to re-invoke | Restart Analyst or rewrite days | `validate_budget`, `check_schedule_conflicts`, `check_transport_disruptions`, `check_attraction_availability`, `check_weather_disruptions` | Severity sort + graph edges |
 
 **24 tool bindings** across the six agents (`validate_budget` is shared by Budget and Critic). Graph order is sequential: Analyst → Destination → Mobility → Budget → Architect → Critic.
 
@@ -40,10 +42,10 @@ This is **not** a mock-only pipeline when keys are present:
 
 | Layer | What it does |
 |---|---|
-| **LLM (Gemini Flash, Groq fallback)** | ReAct tool-calling. Decides *what* to search, *which* cities/hotels to keep, *start city*, *pace*, *which agent to re-invoke*. |
+| **LLM (Gemini Flash-Lite, Groq fallback)** | ReAct tool-calling. Decides *what* to search, *which* cities/hotels to keep, *start city*, *pace*, *which agent to re-invoke*. |
 | **Deterministic tools** | A*, OR-Tools VRPTW, cost/budget arithmetic, preference cosine, validators. The model cannot invent rupee totals. |
 | **Live APIs** | Mapbox, Foursquare, OpenWeatherMap, Gemini (hotels/flights + agent tool-calling) — used first when keys exist. |
-| **`kerala_seed.json`** | Fallback **only** when an API key is missing or the call fails. So the demo still runs; it is not the primary planner. |
+| **`kerala_seed.json`** | Offline rows for cities in that file when a live lookup has nothing for them. |
 
 Without `GEMINI_API_KEY` / `GROQ_API_KEY`, agents fall back to heuristics + seed so tests and offline demos work. With a key, each specialist runs `bind_tools` and the timeline messages say `via gemini:… tool-calling`. `/api/health` reports `"llm": null` when no key is loaded.
 
@@ -140,9 +142,9 @@ Weights are personalized by traveller archetype (`adventure` / `relaxed` / `budg
 ```
 backend/                 FastAPI + LangGraph agents, tools, algorithms
 frontend/                Next.js 14 App Router + Tailwind
-data/kerala_seed.json    Demo fallback: cities, activities, hotels, travel times
+data/kerala_seed.json    Offline city/activity/hotel rows for cities in that file
 ```
 
 ## Environment variables
 
-See `backend/.env.example` and `frontend/.env.local.example`. All keys are optional; the Kerala seed dataset is enough for a full local demo.
+See `backend/.env.example` and `frontend/.env.local.example`. Keys are optional; bundled seed rows cover cities present in that file.

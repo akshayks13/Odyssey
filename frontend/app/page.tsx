@@ -16,8 +16,8 @@ import { Wordmark } from "@/components/Wordmark";
 
 const EXAMPLES = [
   "5 days in Kerala with 3 friends, around ₹40,000, nature and adventure at a relaxed pace",
-  "4-day Kerala trip for 2, budget ₹35,000, beach and slow mornings",
-  "Solo 6-day Kerala trip, ₹60,000, culture, food, and a bit of adventure",
+  "From Chennai to Delhi for 4 days, budget ₹50,000, food and culture",
+  "4-day Kerala trip for 2, by train, budget ₹35,000, beach and slow mornings",
 ];
 
 const features = [
@@ -29,7 +29,7 @@ const features = [
   {
     icon: Compass,
     title: "A sensible route",
-    description: "Stops are ordered to keep travel time reasonable, with real road times when available.",
+    description: "We pick road, train, or flight between stops. Say “by train” if you want to choose.",
   },
   {
     icon: Wallet,

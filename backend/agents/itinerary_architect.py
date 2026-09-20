@@ -1,16 +1,23 @@
-"""
-Agent 5 — Itinerary Architect
+"""Itinerary Architect — day-by-day hour schedule with OR-Tools VRPTW.
 
-Builds the day-by-day, hour-level schedule. The scheduling core is OR-Tools
-VRPTW (`pywrapcp.RoutingModel`) per day: opening-hour time windows, Mapbox
-travel matrix, activity service times, and soft lunch/dinner nodes.
+Role: scheduler. Packs activities, meals, and overnight hotels into days.
+Does not pick new cities or change the A* order.
+
+Decides: pace (relaxed / moderate / packed) which sets daily start/end and
+how many activities to attempt.
+
+Computes: day allocation across ordered cities; opening hours; Mapbox travel
+matrix; OR-Tools VRPTW; multi-objective score. Last day has no overnight hotel.
+
+Uses: `get_opening_hours`, `travel_time_matrix`, `validate_time_windows` (bound
+for the LLM to inspect). `check_schedule_conflicts` runs in-node after the solve.
 """
 from __future__ import annotations
 
 from algorithms.csp_solver import solve_day_schedule
 from algorithms.optimizer import compute_score, infer_archetype
 from llm import get_llm, llm_decide, llm_provider_name
-from models.schemas import Coordinates, Itinerary, ItineraryDay, ScheduledItem
+from models.schemas import Coordinates, Hotel, Itinerary, ItineraryDay, ScheduledItem
 from orchestration.state import TripState
 from tools.foursquare_api import get_opening_hours
 from tools.mapbox_api import travel_time_matrix
@@ -39,6 +46,16 @@ def _coords_of(act: dict, fallback: Coordinates | None) -> dict | None:
     if fallback:
         return {"lat": fallback.lat, "lng": fallback.lng}
     return None
+
+
+def _hotel_for_destination(budget, dest_name: str) -> Hotel | None:
+    if not budget:
+        return None
+    hotels = list(budget.selected_hotels or [])
+    for hotel in hotels:
+        if hotel.destination == dest_name:
+            return hotel
+    return hotels[0] if hotels else None
 
 
 def _matrix_for_day(depot: Coordinates | None, acts: list[dict]) -> list[list[int]] | None:
@@ -77,8 +94,14 @@ def itinerary_architect_node(state: TripState) -> dict:
         get_llm(),
         tools=[get_opening_hours, validate_time_windows, travel_time_matrix],
         system=(
-            "You are Odyssey's Itinerary Architect. Call get_opening_hours and "
-            "travel_time_matrix to inspect feasibility. Reply ONLY with JSON: "
+            "You are Odyssey's Itinerary Architect — the scheduler, not the router. "
+            "ROLE: choose how packed each day should be. OR-Tools VRPTW then builds "
+            "the hour-by-hour plan from opening hours and the travel matrix. "
+            "YOU DECIDE: pace = relaxed (2 sights, 09-18), moderate (3, 08-21), or "
+            "packed (4, 07-22). Honour the user's pace when they stated one. "
+            "YOU MUST NOT: reorder cities, pick hotels, or invent travel times. "
+            "Call get_opening_hours and travel_time_matrix if you need to inspect "
+            "feasibility. Reply ONLY with JSON: "
             "{\"pace\": \"relaxed|moderate|packed\", \"reasoning\": \"...\"}."
         ),
         user=(
@@ -151,13 +174,20 @@ def itinerary_architect_node(state: TripState) -> dict:
             ]
             scheduled_full = [a for a in day_candidates if a["id"] in result["selected_ids"]]
             used = set(result["selected_ids"])
-            # Spread leftover activities (including ones the solver dropped) to later days.
             acts_pool = [a for a in acts_pool if a["id"] not in used]
 
-            travel_leg = leg_by_destination.get(dest_name) if day_in_dest == 0 and idx > 0 else None
+            travel_leg = leg_by_destination.get(dest_name) if day_in_dest == 0 else None
+            is_last_night = day_number >= spec.duration_days
+            overnight = None if is_last_night else _hotel_for_destination(budget, dest_name)
 
             itinerary_days.append(
-                ItineraryDay(day_number=day_number, destination=dest_name, items=items, travel_leg=travel_leg)
+                ItineraryDay(
+                    day_number=day_number,
+                    destination=dest_name,
+                    items=items,
+                    travel_leg=travel_leg,
+                    overnight_hotel=overnight,
+                )
             )
 
             preference_scores_used.extend(a["preference_score"] for a in scheduled_full)

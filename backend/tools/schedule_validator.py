@@ -1,7 +1,4 @@
-"""Deterministic schedule validation — detects time-window and overlap
-conflicts in a constructed itinerary. Used by the Itinerary Architect
-(post-solve check) and the Critic (independent verification).
-"""
+"""Overlap and time-window checks for a constructed itinerary."""
 from __future__ import annotations
 
 from langchain_core.tools import tool

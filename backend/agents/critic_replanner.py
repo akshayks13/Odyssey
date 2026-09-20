@@ -1,19 +1,17 @@
-"""
-Agent 6 — Critic & Replanner
+"""Critic & Replanner — validate the draft and route one specialist if invalid.
 
-Validates the draft itinerary against budget, schedule, weather, closure,
-and transport constraints, and is the sole coordinator: it decides which
-single specialist agent to re-invoke rather than regenerating the whole
-plan. Also writes AgentConflict records when specialists disagree (e.g.
-Destination wants a place Budget/Mobility can't afford/reach cheaply).
+Role: coordinator. Does not rewrite the itinerary itself. Max 3 replan loops.
+Never restarts Trip Analyst.
 
-Disruption lifecycle: an injected Disruption stays visible to every agent
-until the plan is actually valid again (or the replan budget is
-exhausted). It must stay in state at least through the pass where the
-target agent runs, otherwise that agent never sees it — so we do NOT clear
-it "optimistically" the moment we decide to route to the responsible
-agent; MAX_REPLAN_ITERATIONS alone bounds the loop if an agent structurally
-cannot resolve it (e.g. only one viable alternative city exists).
+Decides: which specialist to re-invoke (destination / mobility / budget /
+architect) for the cheapest-damage repair.
+
+Computes: budget, schedule, weather, closure, and transport checks; severity
+sort. On the last allowed pass, returns a best-effort plan with warnings.
+
+Uses: `validate_budget`, `check_schedule_conflicts`, `check_transport_disruptions`,
+`check_attraction_availability`, `check_weather_disruptions`. The JSON reply is
+the replan directive — there is no separate generate_replan_directive tool.
 """
 from __future__ import annotations
 
@@ -63,11 +61,6 @@ def critic_replanner_node(state: TripState) -> dict:
 
     issues: list[ValidationIssue] = []
 
-    # 1. Budget check (deterministic). Once budget_agent has re-run after a
-    #    BUDGET_CUT disruption, `budget.ceiling_inr` already reflects the
-    #    cut. But on the very first pass right after injection (before
-    #    budget_agent has re-run), we must check the disruption's
-    #    new_budget_inr directly, otherwise the cut is silently ignored.
     active_cuts = [d.new_budget_inr for d in disruptions if d.type == DisruptionType.BUDGET_CUT and d.new_budget_inr]
     effective_ceiling = min(active_cuts) if active_cuts else (budget.ceiling_inr if budget else None)
 
@@ -83,7 +76,6 @@ def critic_replanner_node(state: TripState) -> dict:
                 )
             )
 
-    # 2. Schedule conflicts (deterministic)
     if itinerary:
         sched_check = check_schedule_conflicts.invoke({"days": [d.model_dump() for d in itinerary.days]})
         for issue in sched_check["issues"]:
@@ -97,16 +89,11 @@ def critic_replanner_node(state: TripState) -> dict:
                 )
             )
 
-    # 3. Disruption-driven issues (weather / closure / transport). Budget-cut
-    #    disruptions are intentionally NOT re-flagged here — check #1 already
-    #    reflects them via the updated ceiling.
     for d in disruptions:
         issue_type = _DISRUPTION_ISSUE_TYPE.get(d.type)
         if issue_type is None:
             continue
         if d.target not in touched_names:
-            # The disrupted destination/leg is no longer part of the plan —
-            # a prior replan pass already routed around it successfully.
             continue
         issues.append(
             ValidationIssue(
@@ -122,7 +109,6 @@ def critic_replanner_node(state: TripState) -> dict:
     score = itinerary.optimization_score if itinerary else 0.0
     report = ValidationReport(valid=valid, issues=issues, score=score)
 
-    # --- Conflict protocol: record disagreements between specialists ------
     conflicts = list(state.get("conflicts", []))
     if budget and not budget.is_within_budget and state.get("selected_destinations"):
         top_dest = max(state["selected_destinations"], key=lambda d: d.preference_score, default=None)
@@ -138,7 +124,6 @@ def critic_replanner_node(state: TripState) -> dict:
                 )
             )
 
-    # --- Targeted replan routing ------------------------------------------
     replan_directives: list[ReplanDirective] = []
     final_itinerary = None
     remaining_disruptions = disruptions
@@ -165,10 +150,14 @@ def critic_replanner_node(state: TripState) -> dict:
             get_llm(),
             tools=[validate_budget, check_schedule_conflicts, check_transport_disruptions, check_attraction_availability, check_weather_disruptions],
             system=(
-                "You are Odyssey's Critic & Replanner. Call validator tools if needed. "
+                "You are Odyssey's Critic & Replanner — the coordinator, not a seventh planner. "
+                "ROLE: validate the draft and, if it fails, re-invoke exactly one specialist. "
+                "YOU DECIDE: target_agent = destination_agent | mobility_agent | budget_agent | "
+                "itinerary_architect. "
+                "YOU MUST NOT: rewrite days yourself, restart Trip Analyst, or re-run every agent. "
+                "Call validator tools if you need more evidence. Pick the cheapest-damage repair. "
                 "Reply ONLY with JSON: {\"target_agent\": \"destination_agent|budget_agent|"
-                "mobility_agent|itinerary_architect\", \"reason\": \"...\"}. "
-                "Pick the cheapest-damage specialist — do not restart Trip Analyst."
+                "mobility_agent|itinerary_architect\", \"reason\": \"...\"}."
             ),
             user=f"Issues: {[i.model_dump() for i in issues]}. Heuristic top: {top_issue.type} -> {target}.",
         )

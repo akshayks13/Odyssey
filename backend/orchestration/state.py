@@ -1,8 +1,4 @@
-"""
-Shared TripState — the single source of truth all six Odyssey agents read from
-and write to. This is what makes the system a genuine multi-agent architecture
-rather than a chain of independent text hand-offs.
-"""
+"""Shared LangGraph state for the six agents."""
 from __future__ import annotations
 
 import operator
