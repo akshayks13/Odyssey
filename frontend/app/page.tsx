@@ -13,6 +13,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { Wordmark } from "@/components/Wordmark";
+import { openSample } from "@/lib/api";
 
 const EXAMPLES = [
   "5 days in Kerala with 3 friends, around ₹40,000, nature and adventure at a relaxed pace",
@@ -39,7 +40,7 @@ const features = [
   {
     icon: Calendar,
     title: "A day-by-day plan",
-    description: "Opening hours, travel between stops, and meal breaks are packed into a schedule you can follow.",
+    description: "Dated days with opening hours, travel time, meals, and the way there and back — a schedule you can follow.",
   },
 ];
 
@@ -56,8 +57,8 @@ const steps = [
   },
   {
     step: "3",
-    title: "Adjust if things change",
-    description: "Weather, closures, or a tighter budget? We’ll rebuild only what needs to change.",
+    title: "Change anything, just ask",
+    description: "Say “make day 2 lighter” or “add another city”. We rebuild only what needs to change — and you can undo it.",
   },
 ];
 
@@ -69,12 +70,21 @@ const fadeUp = {
 export default function Home() {
   const router = useRouter();
   const [message, setMessage] = useState("");
+  const [sampleError, setSampleError] = useState(false);
 
   function handleSubmit(text: string) {
     if (!text.trim()) return;
     const threadId = crypto.randomUUID();
     sessionStorage.setItem(`odyssey:${threadId}:message`, text);
     router.push(`/plan/${threadId}`);
+  }
+
+  async function showSample() {
+    try {
+      router.push(`/plan/${await openSample()}`);
+    } catch {
+      setSampleError(true);
+    }
   }
 
   function onSearch(event: FormEvent) {
@@ -184,6 +194,9 @@ export default function Home() {
               </button>
             ))}
           </div>
+          <button type="button" onClick={showSample} className="mt-4 text-sm font-medium text-brand-primary hover:underline">
+            {sampleError ? "Sample trip unavailable" : "Or see a sample trip"}
+          </button>
         </div>
       </section>
 

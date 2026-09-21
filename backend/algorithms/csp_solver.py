@@ -3,21 +3,20 @@ from __future__ import annotations
 
 from ortools.constraint_solver import pywrapcp
 
-_LUNCH = ("_meal_lunch", 12.0, 14.0, 45)
-_DINNER = ("_meal_dinner", 19.0, 21.0, 45)
+_LUNCH = ("_meal_lunch", "Lunch", 12.0, 14.0, 45)
+_DINNER = ("_meal_dinner", "Dinner", 19.0, 21.0, 45)
+_DEFAULT_HOP_MINUTES = 12
+_MAX_DEPOT_MINUTES = 45  # the city centre stands in for the hotel; don't let a far-off centre block every day
 
 
-def _default_matrix(n: int, between_minutes: int = 12) -> list[list[int]]:
-    return [[0 if i == j else between_minutes for j in range(n)] for i in range(n)]
+def _default_matrix(n: int) -> list[list[int]]:
+    return [[0 if i == j else _DEFAULT_HOP_MINUTES for j in range(n)] for i in range(n)]
 
 
-def _expand_matrix(base: list[list[int]], extra: int, fill: int = 12) -> list[list[int]]:
-    if extra <= 0:
-        return [row[:] for row in base]
+def _expand_matrix(base: list[list[int]], extra: int) -> list[list[int]]:
     n = len(base) + extra
-    matrix = [row[:] + [fill] * extra for row in base]
-    for _ in range(extra):
-        matrix.append([fill] * n)
+    matrix = [row[:] + [_DEFAULT_HOP_MINUTES] * extra for row in base]
+    matrix += [[_DEFAULT_HOP_MINUTES] * n for _ in range(extra)]
     for i in range(n):
         matrix[i][i] = 0
     return matrix
@@ -36,64 +35,69 @@ def solve_day_schedule(
     Args:
         activities: dicts with id, name, duration_minutes, opening_hour,
             closing_hour, preference_score, category.
-        day_start_hour: depot / day start.
+        day_start_hour: earliest start (later on an arrival day).
         day_end_hour: latest return to depot.
         travel_matrix_minutes: square matrix over [depot] + activities.
             If omitted, a small intra-city default is used.
-        include_meals: add lunch/dinner dummy nodes with time windows.
+        include_meals: add lunch/dinner nodes with time windows.
 
     Returns:
-        scheduled (real activities only), selected_ids, status.
+        scheduled (real activities), meals, selected_ids, status.
     """
     if not activities:
-        return {"scheduled": [], "selected_ids": [], "status": "NO_ACTIVITIES"}
+        return {"scheduled": [], "meals": [], "selected_ids": [], "status": "NO_ACTIVITIES"}
 
     day_start = int(day_start_hour * 60)
     day_end = int(day_end_hour * 60)
 
+    # Keep activities that can fit their opening window; remap the travel matrix to match.
+    keep: list[int] = []
     feasible: list[dict] = []
-    for act in activities:
+    for i, act in enumerate(activities):
         dur = max(15, int(act["duration_minutes"]))
-        open_m = max(day_start, int(act["opening_hour"]) * 60)
-        close_m = min(day_end, int(act["closing_hour"]) * 60)
+        open_m = max(day_start, int(float(act["opening_hour"]) * 60))
+        close_m = min(day_end, int(float(act["closing_hour"]) * 60))
         if close_m - open_m < dur:
             continue
+        keep.append(i)
         feasible.append({**act, "duration_minutes": dur, "_open": open_m, "_close": close_m - dur})
-
     if not feasible:
-        return {"scheduled": [], "selected_ids": [], "status": "INFEASIBLE"}
+        return {"scheduled": [], "meals": [], "selected_ids": [], "status": "INFEASIBLE"}
+
+    if travel_matrix_minutes and len(travel_matrix_minutes) == len(activities) + 1:
+        rows = [0] + [i + 1 for i in keep]
+        base = [[int(travel_matrix_minutes[r][c]) for c in rows] for r in rows]
+    else:
+        base = _default_matrix(len(feasible) + 1)
 
     meal_nodes: list[dict] = []
     if include_meals:
-        for mid, open_h, close_h, dur in (_LUNCH, _DINNER):
+        for mid, name, open_h, close_h, dur in (_LUNCH, _DINNER):
             open_m, close_m = int(open_h * 60), int(close_h * 60)
-            if close_m - open_m >= dur and open_m >= day_start and close_m <= day_end + 60:
+            if open_m >= day_start and close_m <= day_end + 60:
                 meal_nodes.append(
                     {
                         "id": mid,
-                        "name": mid,
+                        "name": name,
                         "category": "meal",
                         "duration_minutes": dur,
                         "preference_score": 0.0,
                         "_open": open_m,
-                        "_close": max(open_m, close_m - dur),
+                        "_close": close_m - dur,
                         "_meal": True,
                     }
                 )
 
-    # index 0 = depot; 1..F = activities; then meals
+    # index 0 = depot; then activities; then meals
     nodes = [
         {"id": "_depot", "duration_minutes": 0, "_open": day_start, "_close": day_end, "_depot": True},
         *feasible,
         *meal_nodes,
     ]
     n = len(nodes)
-
-    act_count = len(feasible)
-    if travel_matrix_minutes and len(travel_matrix_minutes) == act_count + 1:
-        matrix = _expand_matrix(travel_matrix_minutes, len(meal_nodes))
-    else:
-        matrix = _default_matrix(n)
+    matrix = _expand_matrix(base, len(meal_nodes))
+    for j in range(1, n):
+        matrix[0][j] = min(matrix[0][j], _MAX_DEPOT_MINUTES)
 
     manager = pywrapcp.RoutingIndexManager(n, 1, 0)
     routing = pywrapcp.RoutingModel(manager)
@@ -101,41 +105,35 @@ def solve_day_schedule(
     def transit_cb(from_index, to_index):
         a = manager.IndexToNode(from_index)
         b = manager.IndexToNode(to_index)
-        service = int(nodes[a]["duration_minutes"])
-        return int(matrix[a][b]) + service
+        return int(matrix[a][b]) + int(nodes[a]["duration_minutes"])
 
     transit_idx = routing.RegisterTransitCallback(transit_cb)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
 
-    # Prefer high-preference activities by making unused-node penalties scale with score.
+    # Skipping an activity costs more the longer it is and the more the traveller wants it; meals are soft.
     for i, node in enumerate(nodes):
         if node.get("_depot"):
             continue
-        index = manager.NodeToIndex(i)
         if node.get("_meal"):
-            routing.AddDisjunction([index], 250)  # soft meal
+            penalty = 600
         else:
-            penalty = int(400 + 800 * float(node.get("preference_score") or 0.5))
-            routing.AddDisjunction([index], penalty)
+            pref = float(node.get("preference_score") or 0.5)
+            penalty = int(400 + 4 * node["duration_minutes"] * (0.5 + pref) + 600 * pref)
+        routing.AddDisjunction([manager.NodeToIndex(i)], penalty)
 
-    # Cumul = minutes from midnight. Capacity must cover the latest closing hour.
-    routing.AddDimension(
-        transit_idx,
-        90,  # allow waiting (slack) for time windows
-        day_end + 90,
-        False,
-        "Time",
-    )
+    # Waiting is allowed for the whole day: a sight that opens at 10:00 in a 07:00 day is a 3h wait.
+    horizon = day_end + 90
+    routing.AddDimension(transit_idx, horizon - day_start, horizon, False, "Time")
     time_dim = routing.GetDimensionOrDie("Time")
-    time_dim.SetSpanCostCoefficientForAllVehicles(1)
 
     for i, node in enumerate(nodes):
-        index = manager.NodeToIndex(i)
-        time_dim.CumulVar(index).SetRange(int(node["_open"]), int(node["_close"]))
-
-    for v in range(routing.vehicles()):
-        time_dim.CumulVar(routing.Start(v)).SetRange(day_start, day_start + 60)
-        time_dim.CumulVar(routing.End(v)).SetRange(day_start, day_end)
+        time_dim.CumulVar(manager.NodeToIndex(i)).SetRange(int(node["_open"]), int(node["_close"]))
+    time_dim.CumulVar(routing.Start(0)).SetRange(day_start, day_end)
+    time_dim.CumulVar(routing.End(0)).SetRange(day_start, day_end + 90)
+    # Finish as early as possible (an idle morning is not free), starting at the earliest feasible time.
+    time_dim.SetCumulVarSoftUpperBound(routing.End(0), day_start, 1)
+    routing.AddVariableMinimizedByFinalizer(time_dim.CumulVar(routing.Start(0)))
+    routing.AddVariableMinimizedByFinalizer(time_dim.CumulVar(routing.End(0)))
 
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy = 3  # path cheapest arc
@@ -144,28 +142,29 @@ def solve_day_schedule(
 
     solution = routing.SolveWithParameters(params)
     if solution is None:
-        return {"scheduled": [], "selected_ids": [], "status": "INFEASIBLE"}
+        return {"scheduled": [], "meals": [], "selected_ids": [], "status": "INFEASIBLE"}
 
     scheduled: list[dict] = []
-    selected_ids: list[str] = []
+    meals: list[dict] = []
     index = routing.Start(0)
     while not routing.IsEnd(index):
-        node_i = manager.IndexToNode(index)
-        node = nodes[node_i]
-        if not node.get("_depot") and not node.get("_meal"):
+        node = nodes[manager.IndexToNode(index)]
+        if not node.get("_depot"):
             start_m = solution.Value(time_dim.CumulVar(index))
-            end_m = start_m + int(node["duration_minutes"])
-            scheduled.append(
-                {
-                    "id": node["id"],
-                    "name": node["name"],
-                    "start_hour": round(start_m / 60, 2),
-                    "end_hour": round(end_m / 60, 2),
-                    "category": node.get("category", "general"),
-                }
-            )
-            selected_ids.append(node["id"])
+            row = {
+                "id": node["id"],
+                "name": node["name"],
+                "start_hour": round(start_m / 60, 2),
+                "end_hour": round((start_m + int(node["duration_minutes"])) / 60, 2),
+                "category": node.get("category", "general"),
+            }
+            (meals if node.get("_meal") else scheduled).append(row)
         index = solution.Value(routing.NextVar(index))
 
     scheduled.sort(key=lambda x: x["start_hour"])
-    return {"scheduled": scheduled, "selected_ids": selected_ids, "status": "FEASIBLE"}
+    return {
+        "scheduled": scheduled,
+        "meals": meals,
+        "selected_ids": [s["id"] for s in scheduled],
+        "status": "FEASIBLE" if scheduled else "EMPTY",
+    }

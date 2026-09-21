@@ -12,13 +12,12 @@ from config import (
     LANGSMITH_PROJECT,
     LANGSMITH_TRACING,
     MAPBOX_API_KEY,
-    OPENWEATHER_API_KEY,
 )
-from llm import llm_provider_name
+from llm import llm_provider_name, providers_status
 from models.schemas import Disruption, DisruptionType
 from orchestration.graph import get_graph
 from orchestration.state import initial_state
-from services.itinerary_service import load_itinerary
+from services.itinerary_service import copy_sample, load_itinerary, load_state
 
 router = APIRouter(prefix="/api")
 
@@ -40,6 +39,11 @@ class PlanRequest(BaseModel):
     thread_id: str | None = None
 
 
+class ReviseRequest(BaseModel):
+    thread_id: str
+    message: str
+
+
 class DisruptRequest(BaseModel):
     thread_id: str
     type: DisruptionType
@@ -56,6 +60,32 @@ async def create_plan(req: PlanRequest):
     thread_id = req.thread_id or str(uuid.uuid4())
     _pending[thread_id] = initial_state(req.message)
     return {"thread_id": thread_id}
+
+
+@router.post("/sample")
+async def open_sample():
+    """Open the saved sample trip as a new thread. Needs no model, so a demo works when none is available."""
+    thread_id = str(uuid.uuid4())
+    if not copy_sample(thread_id):
+        raise HTTPException(status_code=404, detail="No sample trip is saved")
+    return {"thread_id": thread_id}
+
+
+@router.post("/revise")
+async def revise_plan(req: ReviseRequest):
+    """Change an existing plan with a sentence. The Edit Router decides which agents re-run; the
+    client then opens the stream. Works from the stored state, so it survives a server restart."""
+    stored = load_state(req.thread_id)
+    if stored is None or not req.message.strip():
+        raise HTTPException(status_code=404 if stored is None else 422, detail="Unknown thread_id or empty message")
+    _pending[req.thread_id] = {
+        **stored,
+        "edit_request": req.message.strip(),
+        "edit_directive": None,
+        "assistant_reply": None,
+        "iteration_count": 0,
+    }
+    return {"thread_id": req.thread_id, "status": "queued"}
 
 
 @router.get("/plan/{thread_id}/stream")
@@ -92,8 +122,12 @@ async def inject_disruption(req: DisruptRequest):
     config = _graph_config(req.thread_id, "disrupt")
 
     existing_state = graph.get_state(config)
-    if not existing_state.values:
-        raise HTTPException(status_code=404, detail=f"Unknown thread_id: {req.thread_id}")
+    if not existing_state.values:  # not in memory (server restarted, or the sample trip): resume from the saved plan
+        stored = load_state(req.thread_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"Unknown thread_id: {req.thread_id}")
+        graph.update_state(config, stored, as_node="itinerary_architect")
+        existing_state = graph.get_state(config)
 
     disruption = Disruption(
         type=req.type,
@@ -106,7 +140,7 @@ async def inject_disruption(req: DisruptRequest):
 
     graph.update_state(
         config,
-        {"disruptions": [*existing_disruptions, disruption], "iteration_count": 0},
+        {"disruptions": [*existing_disruptions, disruption], "iteration_count": 0, "edit_directive": None, "assistant_reply": None},
         as_node="itinerary_architect",
     )
     return {"thread_id": req.thread_id, "status": "injected"}
@@ -129,16 +163,18 @@ async def get_itinerary(thread_id: str):
 
 @router.get("/health")
 async def health():
-    llm = llm_provider_name()
+    """Server state. `models.state` says what the models are really doing — a configured key is not a
+    working key, so it reads "configured_but_untried" until one has actually answered."""
+    models = providers_status()
     return {
         "status": "ok",
-        "llm": llm,
-        "mode": "llm_tool_calling" if llm else "offline_heuristics_seed",
+        "model": llm_provider_name() or "unavailable",
+        "models": models,
         "langsmith": {"enabled": LANGSMITH_TRACING, "project": LANGSMITH_PROJECT if LANGSMITH_TRACING else None},
         "apis": {
-            "mapbox": bool(MAPBOX_API_KEY),
-            "foursquare": bool(FOURSQUARE_API_KEY),
-            "weather": bool(OPENWEATHER_API_KEY),
+            "mapbox": "key set" if MAPBOX_API_KEY else "absent (OpenStreetMap only)",
+            "foursquare": "key set but unused" if FOURSQUARE_API_KEY else "unused",
+            "weather": "open-meteo",
             "hotels_flights": "llm",
         },
     }

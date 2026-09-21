@@ -1,4 +1,4 @@
-"""Mapbox geocoding, driving directions, and travel-time matrices."""
+"""Places and travel times. Mapbox first; OpenStreetMap (Nominatim for places, OSRM for roads) if Mapbox has no answer."""
 from __future__ import annotations
 
 import math
@@ -7,29 +7,58 @@ import httpx
 from langchain_core.tools import tool
 
 from config import MAPBOX_API_KEY
-from tools.seed_data import get_destination_seed, get_travel_leg
+from tools.cost_calculator import ROAD_VEHICLES
 
 MAPBOX_GEOCODE_URL = "https://api.mapbox.com/geocoding/v5/mapbox.places/{query}.json"
 MAPBOX_DIRECTIONS_URL = "https://api.mapbox.com/directions/v5/mapbox/driving/{coords}"
-MAPBOX_MATRIX_URL = "https://api.mapbox.com/directions-matrix/v1/mapbox/driving/{coords}"
-MAPBOX_STATIC_URL = "https://api.mapbox.com/styles/v1/mapbox/outdoors-v12/static/{lng},{lat},12,0/600x400"
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{coords}"
 
-_AVG_ROAD_SPEED_KMH = 40.0  # used when we only have haversine distance
+_geocode_cache: dict[str, dict] = {}
+_directions_cache: dict[tuple[str, str], dict] = {}
 
-_KNOWN_COORDS = {
-    "delhi": (28.6139, 77.2090),
-    "new delhi": (28.6139, 77.2090),
-    "mumbai": (19.0760, 72.8777),
-    "bangalore": (12.9716, 77.5946),
-    "bengaluru": (12.9716, 77.5946),
-    "chennai": (13.0827, 80.2707),
-    "hyderabad": (17.3850, 78.4867),
-    "goa": (15.2993, 74.1240),
-    "kochi": (9.9312, 76.2673),
-    "cochin": (9.9312, 76.2673),
-    "trivandrum": (8.5241, 76.9366),
-    "thiruvananthapuram": (8.5241, 76.9366),
-}
+_OWN_CAR_PER_KM = ROAD_VEHICLES["own_car"]["per_km"]
+_OSRM_REAL_ROADS = 1.4  # OSRM assumes free-flowing roads; on Indian roads a drive takes about 1.4x as long
+
+
+def _nominatim(place_name: str) -> dict | None:
+    """OpenStreetMap's free geocoder: the fallback when Mapbox has no answer."""
+    try:
+        resp = httpx.get(
+            NOMINATIM_URL,
+            params={"q": place_name, "format": "json", "limit": 1},
+            headers={"User-Agent": "Odyssey-Travel-Planner/1.0"},
+            timeout=8.0,
+        )
+        resp.raise_for_status()
+        hit = (resp.json() or [None])[0]
+        if hit:
+            return {"name": place_name.split(",")[0].strip(), "lat": float(hit["lat"]), "lng": float(hit["lon"]), "source": "osm"}
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _osrm(o: dict, d: dict) -> dict | None:
+    """OpenStreetMap road distance and time between two points (free, no key)."""
+    try:
+        resp = httpx.get(
+            OSRM_URL.format(coords=f"{o['lng']},{o['lat']};{d['lng']},{d['lat']}"),
+            params={"overview": "false"},
+            timeout=8.0,
+        )
+        resp.raise_for_status()
+        route = resp.json()["routes"][0]
+        km = route["distance"] / 1000.0
+        return {
+            "distance_km": round(km, 1),
+            "duration_hours": round(route["duration"] / 3600.0 * _OSRM_REAL_ROADS, 2),
+            "cost_inr": round(km * _OWN_CAR_PER_KM, 0),
+            "mode": "road",
+            "source": "osrm",
+        }
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -49,8 +78,12 @@ def geocode_location(place_name: str) -> dict:
         place_name: Free-text location, e.g. "Kerala" or "Munnar, India".
 
     Returns:
-        dict with keys: name, lat, lng, source ("mapbox" or "seed").
+        dict with keys: name, lat, lng, source ("mapbox" or "osm"). lat and lng are None when the place cannot be found.
     """
+    cache_key = place_name.strip().lower()
+    if cache_key in _geocode_cache:
+        return _geocode_cache[cache_key]
+    found = None
     if MAPBOX_API_KEY:
         try:
             resp = httpx.get(
@@ -59,29 +92,17 @@ def geocode_location(place_name: str) -> dict:
                 timeout=5.0,
             )
             resp.raise_for_status()
-            data = resp.json()
-            if data.get("features"):
-                feat = data["features"][0]
-                lng, lat = feat["center"]
-                return {"name": feat.get("text", place_name), "lat": lat, "lng": lng, "source": "mapbox"}
-        except Exception:
+            features = resp.json().get("features")
+            if features:
+                lng, lat = features[0]["center"]
+                found = {"name": features[0].get("text", place_name), "lat": lat, "lng": lng, "source": "mapbox"}
+        except Exception:  # noqa: BLE001
             pass
-
-    city_key = place_name.split(",")[0].strip()
-    seed = get_destination_seed(place_name) or get_destination_seed(city_key)
-    if seed:
-        return {
-            "name": seed["name"],
-            "lat": seed["coordinates"]["lat"],
-            "lng": seed["coordinates"]["lng"],
-            "source": "seed",
-        }
-    known = _KNOWN_COORDS.get(place_name.strip().lower()) or _KNOWN_COORDS.get(city_key.lower())
-    if known:
-        lat, lng = known
-        return {"name": city_key, "lat": lat, "lng": lng, "source": "known_city"}
-
-    return {"name": place_name, "lat": 21.1466, "lng": 79.0889, "source": "approx"}
+    found = found or _nominatim(place_name)  # the one fallback
+    if not found:
+        return {"name": place_name, "lat": None, "lng": None, "source": "not_found"}
+    _geocode_cache[cache_key] = found
+    return found
 
 
 @tool(parse_docstring=True)
@@ -93,12 +114,17 @@ def get_directions(origin: str, destination: str) -> dict:
         destination: Name of the destination (e.g. "Munnar").
 
     Returns:
-        dict with keys: distance_km, duration_hours, cost_inr, mode, source.
+        dict with keys: distance_km, duration_hours, cost_inr, mode, source ("mapbox", "osrm" or "unavailable").
     """
+    cache_key = (origin.strip().lower(), destination.strip().lower())
+    if cache_key in _directions_cache:
+        return _directions_cache[cache_key]
     if MAPBOX_API_KEY:
         try:
             o = geocode_location.invoke({"place_name": origin})
             d = geocode_location.invoke({"place_name": destination})
+            if o["lat"] is None or d["lat"] is None:
+                raise ValueError("place not found")
             coords = f"{o['lng']},{o['lat']};{d['lng']},{d['lat']}"
             resp = httpx.get(
                 MAPBOX_DIRECTIONS_URL.format(coords=coords),
@@ -111,37 +137,25 @@ def get_directions(origin: str, destination: str) -> dict:
                 route = data["routes"][0]
                 distance_km = route["distance"] / 1000.0
                 duration_hours = route["duration"] / 3600.0
-                return {
+                found = {
                     "distance_km": round(distance_km, 1),
                     "duration_hours": round(duration_hours, 2),
-                    "cost_inr": round(distance_km * 7.0, 0),  # ~INR 7/km taxi estimate
+                    "cost_inr": round(distance_km * _OWN_CAR_PER_KM, 0),  # one own car; Mobility prices the actual vehicle
                     "mode": "road",
                     "source": "mapbox",
                 }
+                _directions_cache[cache_key] = found
+                return found
         except Exception:
             pass
 
-    leg = get_travel_leg(origin, destination)
-    if leg:
-        return {
-            "distance_km": leg["distance_km"],
-            "duration_hours": leg["duration_hours"],
-            "cost_inr": leg["cost_inr"],
-            "mode": leg.get("mode", "road"),
-            "source": "seed",
-        }
-
     o = geocode_location.invoke({"place_name": origin})
     d = geocode_location.invoke({"place_name": destination})
-    dist = haversine_km(o["lat"], o["lng"], d["lat"], d["lng"])
-    duration = dist / _AVG_ROAD_SPEED_KMH
-    return {
-        "distance_km": round(dist, 1),
-        "duration_hours": round(duration, 2),
-        "cost_inr": round(dist * 7.0, 0),
-        "mode": "road",
-        "source": "haversine_estimate",
-    }
+    found = _osrm(o, d) if o["lat"] is not None and d["lat"] is not None else None
+    if found:
+        _directions_cache[cache_key] = found
+        return found
+    return {"distance_km": 0.0, "duration_hours": 0.0, "cost_inr": 0.0, "mode": "road", "source": "unavailable"}
 
 
 def _haversine_matrix(points: list[dict]) -> list[list[int]]:
@@ -159,7 +173,8 @@ def _haversine_matrix(points: list[dict]) -> list[list[int]]:
 
 @tool(parse_docstring=True)
 def travel_time_matrix(points: list[dict]) -> dict:
-    """Build a square travel-time matrix (minutes) for VRPTW using Mapbox Matrix.
+    """Square travel-time matrix (minutes) between a day's stops, for the scheduler. Stops in one city are
+    a few km apart, so this uses straight-line distance at city speed instead of a routing service.
 
     Args:
         points: Ordered list of {lat, lng} dicts. Index 0 should be the depot
@@ -172,38 +187,4 @@ def travel_time_matrix(points: list[dict]) -> dict:
         return {"matrix": [], "source": "empty"}
     if len(points) == 1:
         return {"matrix": [[0]], "source": "trivial"}
-
-    if MAPBOX_API_KEY and len(points) <= 25:
-        try:
-            coords = ";".join(f"{p['lng']},{p['lat']}" for p in points)
-            resp = httpx.get(
-                MAPBOX_MATRIX_URL.format(coords=coords),
-                params={"access_token": MAPBOX_API_KEY, "annotations": "duration"},
-                timeout=8.0,
-            )
-            resp.raise_for_status()
-            durations = resp.json().get("durations")
-            if durations:
-                matrix = [[max(0, int(round((cell or 0) / 60))) for cell in row] for row in durations]
-                return {"matrix": matrix, "source": "mapbox"}
-        except Exception:
-            pass
-
     return {"matrix": _haversine_matrix(points), "source": "haversine"}
-
-
-@tool(parse_docstring=True)
-def get_static_map_url(lat: float, lng: float) -> dict:
-    """Mapbox Static Images URL for a coordinate (used as a photo fallback).
-
-    Args:
-        lat: Latitude.
-        lng: Longitude.
-
-    Returns:
-        dict with url and source.
-    """
-    if not MAPBOX_API_KEY:
-        return {"url": None, "source": "none"}
-    url = MAPBOX_STATIC_URL.format(lng=lng, lat=lat) + f"?access_token={MAPBOX_API_KEY}"
-    return {"url": url, "source": "mapbox_static"}

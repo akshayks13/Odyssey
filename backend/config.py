@@ -1,7 +1,7 @@
 """Environment and API keys.
 
-Missing keys skip the matching live API; tools then use heuristics or
-bundled seed rows when the city is in that file.
+Missing keys skip the matching live API and the tool falls back once: Mapbox to OpenStreetMap,
+a hotel or fare quote to nothing at all. There is no bundled seed data to fall back to.
 """
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ load_dotenv(Path(__file__).parent / ".env")
 
 BACKEND_DIR = Path(__file__).parent
 PROJECT_ROOT = BACKEND_DIR.parent
-SEED_DATA_PATH = PROJECT_ROOT / "data" / "kerala_seed.json"
+DB_PATH = Path(os.getenv("ODYSSEY_DB_PATH") or BACKEND_DIR / "odyssey.db")
 
 # --- LLM ---------------------------------------------------------------
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_API_KEYS = [k.strip() for k in os.getenv("GEMINI_API_KEY", "").split(",") if k.strip()]  # several keys rotate
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
@@ -46,14 +46,9 @@ if LANGSMITH_API_KEY and LANGSMITH_TRACING:
 # --- External travel APIs (all optional) ---------------------------------
 MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
 FOURSQUARE_API_KEY = os.getenv("FOURSQUARE_API_KEY", "")
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 
 # --- Replanning ---------------------------------------------------------
 MAX_REPLAN_ITERATIONS = int(os.getenv("MAX_REPLAN_ITERATIONS", "3"))
 
 # --- Server ---------------------------------------------------------------
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
-
-
-def has_key(name: str) -> bool:
-    return bool(globals().get(name, ""))

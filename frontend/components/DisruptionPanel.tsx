@@ -18,10 +18,12 @@ export function DisruptionPanel({
   onInject: (payload: DisruptPayload) => void;
   disabled: boolean;
 }) {
-  const [target, setTarget] = useState(destinations[0]?.name ?? "");
+  const [target, setTarget] = useState("");
 
   const names = destinations.map((d) => d.name);
-  const primary = target || names[0] || "";
+  // A closure or edit can remove the city that was selected. Fall back to the first city still in the
+  // plan, otherwise the buttons keep saying "Close <a city that is no longer in the trip>".
+  const primary = names.includes(target) ? target : names[0] || "";
 
   const buttonClass =
     "inline-flex items-center gap-1.5 rounded-full border border-line bg-white px-3 py-1.5 text-sm font-medium text-ink hover:bg-wash disabled:opacity-50";

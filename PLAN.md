@@ -1,6 +1,6 @@
 ---
 name: Odyssey Travel System
-overview: Design and implement Odyssey — a 6-agent LangGraph-powered adaptive travel planning system with real API integrations (Mapbox, OpenWeatherMap) plus Gemini-generated hotel/flight market data, weighted A* routing, OR-Tools VRPTW scheduling, and a Next.js frontend with live agent-progress streaming via SSE.
+overview: Design and implement Odyssey — a 6-agent LangGraph-powered adaptive travel planning system with real API integrations (Mapbox, Open-Meteo) plus LLM-generated hotel/flight market data, weighted A* routing, OR-Tools VRPTW scheduling, and a Next.js frontend with live agent-progress streaming via SSE.
 todos:
   - id: repo-init
     content: Initialize git repo, push to GitHub (akshayks13/Odyssey), set up monorepo structure
@@ -9,7 +9,7 @@ todos:
     content: Define TripState TypedDict, all Pydantic schemas (TripSpec, Destination, Activity, Route, Itinerary, ValidationReport, Disruption)
     status: completed
   - id: tools-layer
-    content: "Implement all tools: mapbox_api.py (Geocoding/Directions), foursquare_api.py (Places/hours), travel_market.py (Gemini hotels/flights), weather.py (OpenWeatherMap), cost_calculator.py, preference_scorer.py, schedule_validator.py, budget_validator.py"
+    content: "Implement all tools: mapbox_api.py (Geocoding/Directions), foursquare_api.py (Places/hours), travel_market.py (LLM hotels and flight/train quotes), weather.py (Open-Meteo), cost_calculator.py, preference_scorer.py, schedule_validator.py, budget_validator.py"
     status: completed
   - id: algorithms
     content: Implement weighted A* (astar.py — state=(location, visited_set, elapsed_time), haversine heuristic, weight escalation for anytime behavior), VRPTW scheduler (csp_solver.py — OR-Tools pywrapcp.RoutingModel with time windows from opening hours), multi-objective scorer (optimizer.py)
@@ -24,13 +24,13 @@ todos:
     content: FastAPI app with SSE streaming endpoint (POST /api/plan), disruption injection endpoint (POST /api/disrupt), itinerary CRUD, CORS config
     status: completed
   - id: frontend
-    content: "Next.js 14 App Router (nodejs runtime): landing page, live planning page with AgentTimeline (SSE via TransformStream proxy), ItineraryView (day accordion), MapView (Mapbox GL JS), DisruptionPanel, BudgetChart (recharts), useAgentStream hook"
+    content: "Next.js 14 App Router (nodejs runtime): landing page, live planning page with AgentTimeline (SSE via TransformStream proxy), ItineraryView (day accordion), MapView (MapLibre GL JS), DisruptionPanel, BudgetChart (recharts), useAgentStream hook"
     status: completed
   - id: tests
     content: Unit tests for A*, CSP, preference scorer, budget validator; agent-level tests with mocked tools; 3 full scenario integration tests (normal, weather disruption, budget overrun)
     status: completed
   - id: local-setup
-    content: .env.example with API keys; README with local run instructions (uvicorn + npm run dev); Kerala seed data fallback when live APIs fail
+    content: .env.example with API keys; README with local run instructions (uvicorn + npm run dev); a saved sample trip for demos when no model is available
     status: completed
 isProject: false
 ---
@@ -69,20 +69,22 @@ flowchart TD
 
 - **Backend**: FastAPI (Python 3.11+)
 - **Agent Framework**: LangGraph `StateGraph` (linear specialists + Critic routing) + LangChain
-- **LLM**: Gemini Flash-Lite (`GEMINI_MODEL`, default `gemini-3.1-flash-lite`); Groq if Gemini is rate-limited
-- **Fallback**: optional Groq model configured through environment variables; use only when the selected Gemini model is rate-limited
+- **LLM**: Gemini (`GEMINI_MODEL`, one or several keys that rotate) first; Groq (`GROQ_MODEL`) if every key is rate-limited or fails. Both run tool loops (Gemini through Google's `google-genai` SDK, because the LangChain client drops the thought signatures Gemini 3 needs)
 - **LangGraph checkpointing**: `MemorySaver` for local/demo; optional `AsyncPostgresSaver` later if persistence is needed
 - **Observability**: LangSmith (free tier) — trace every agent step, visualize tool calls, inspect reasoning chains; set via `LANGSMITH_API_KEY` + `LANGSMITH_TRACING=true`
-- **Algorithms**: weighted A* for city order; OR-Tools VRPTW/CP-SAT for day schedules; weighted-sum scorer (no scipy)
+- **Algorithms**: weighted A* for city order; OR-Tools routing solver (VRPTW, guided local search) for the sights within each day; weighted-sum scorer (no scipy)
 - **External APIs**:
-  - **Mapbox**: map rendering, geocoding, road directions and travel-time matrices
+  - **Mapbox**: geocoding and road directions (first choice; its free account can be paused, so each has one fallback)
+  - **OSRM** (OpenStreetMap roads, free, no key): the drive-time fallback when Mapbox has no answer; its free-flow times are multiplied by 1.4
+  - **OpenStreetMap tiles + MapLibre**: the interactive map in the browser (no key)
   - **Foursquare Places**: nearby POIs; LLM fills visitor sights when that list is empty or not useful
-  - **LLM travel market**: hotels and airfares from Gemini, then Groq
-  - **OpenWeatherMap**: current weather + 5-day / 3-hour forecast
-- **Database**: SQLite for saved itineraries (enough for the course demo)
+  - **LLM market data**: places in a region, sights with entry fees, hotels, flight/train quotes, food prices
+  - **Open-Meteo** (free, no key): a real forecast when the trip is within 16 days, otherwise the same dates last year as a seasonal guide, per day with rain chance
+  - **Nominatim** (OpenStreetMap): free fallback geocoder when Mapbox has no answer
+- **Database**: SQLite for saved itineraries and the graph state behind them (so a plan can be edited after a restart)
 - **Cache**: None
-- **Offline fallback**: `data/kerala_seed.json` for cities present in that file when a live lookup fails
-- **Frontend**: Next.js 14 App Router (nodejs runtime) + Tailwind + shadcn/ui + Mapbox GL JS
+- **No model**: planning stops with a clear message; a saved sample trip (`backend/sample_trip.json`) opens without one
+- **Frontend**: Next.js 14 App Router (nodejs runtime) + Tailwind + shadcn/ui + MapLibre GL JS (OpenStreetMap tiles)
 - **Streaming**: Server-Sent Events — FastAPI `StreamingResponse` + LangGraph `astream(version="v2", stream_mode=[...])` → Next.js `TransformStream` route handler
 - **Deployment**: local run only (no Docker for v1)
 
@@ -90,7 +92,7 @@ flowchart TD
 
 ## The 6 Agents
 
-Every specialist is a LangGraph node. The model **decides**; tools and algorithms **compute**. With no LLM key (or `ODYSSEY_DISABLE_LLM=1`), the same tools still run on a heuristic path.
+Every specialist is a LangGraph node. The model **decides**; tools and algorithms **compute**. Without a model nothing is guessed: planning stops with a clear message.
 
 Graph order (locked): Analyst → Destination → Mobility → Budget → Architect → Critic.
 
@@ -101,10 +103,10 @@ Graph order (locked): Analyst → Destination → Mobility → Budget → Archit
 - **Role**: Parser. Turn the user's sentence into a `TripSpec`. Later agents plan; this one only extracts.
 - **Input**: `raw_input` (natural language)
 - **Output**: `trip_spec` (`destination_region`, `origin_city`, days, travellers, budget, preference weights, pace, `needs_clarification`)
-- **Decides (LLM)**: Which place they asked to visit; home/arrival city if they said "from X to Y"; missing-field defaults
-- **Computes**: Regex/keyword heuristic when no LLM is configured (duration, budget, "from X to Y", named city, region keywords)
+- **Decides (LLM)**: Which place they asked to visit; home/arrival city if they said "from X to Y"; start date (it is told today's date); which of duration / travellers / budget it had to assume. If no destination was given it asks a question and the graph ends
+- **Computes**: Validates the reply against `TripSpec` and keeps odd values in range. There is no fallback parser: without a model it stops with a clear error, because a guessed destination is worse than none
 - **Must not**: Pick sights, hotels, a visit order, or a day plan. `origin_city` is arrival, not a sightseeing stop. Do not default the region to Kerala unless they asked for Kerala / a Kerala town or nothing was named.
-- **Tools bound**: `geocode_location` (Mapbox), `validate_trip_schema`
+- **Tools bound**: `geocode_location`, `validate_trip_schema`
 - **Instruction**: SYSTEM_PROMPT in the file — "You are Odyssey's Trip Analyst — the parser, not the planner."
 
 ---
@@ -115,14 +117,14 @@ Graph order (locked): Analyst → Destination → Mobility → Budget → Archit
 - **Input**: `trip_spec` (+ disruptions on replan)
 - **Output**: `candidate_destinations`, `selected_destinations`, `candidate_activities`
 - **Decides (LLM)**: Short list of city names from the ranking (never a disrupted city; never the origin/home city)
-- **Computes**: Weighted cosine preference score; weather risk; `max_destinations = duration_days // 2` (raised if the user named more cities); extra geocode of named towns the region search missed
+- **Computes**: Weighted cosine preference score; weather for the trip dates (forecast, or last year's dates); `max_destinations = duration_days // 2` (raised if the user named more cities). Honours cities the user pinned or excluded, and sees the Critic's reason when sent back
 - **Must not**: Invent a schedule, pick hotels, or choose travel order (Mobility does A*)
-- **Tools bound**:
-  - `search_destinations` — bundled cities when the region matches that dataset, else Mapbox geocode
-  - `search_attractions` — LLM visitor sights first; else Foursquare nearby; else seed for cities in that file
-  - `get_weather_forecast` — OpenWeatherMap
+- **Tools the model can call**: `search_attractions`, `get_directions`. The code itself uses:
+  - `search_destinations` — the LLM lists places in the region (any country); nothing is invented if it cannot answer
+  - `get_directions` — drive times, so the LLM can keep stops close together
+  - `search_attractions` — LLM visitor sights (with entry fees). Foursquare's nearby search is kept in `foursquare_api.py` but not used: it returns every kind of venue (schools, shops, clinics)
+  - weather (`trip_weather`, Open-Meteo) for each candidate, shown to the model so it can avoid a soaked stop
   - `score_preference_match` — cosine similarity
-  - `get_place_photos` — Foursquare, else Mapbox Static
 - **Instruction**: "You are Odyssey's Destination Discovery agent — the explorer, not the scheduler."
 
 ---
@@ -132,10 +134,10 @@ Graph order (locked): Analyst → Destination → Mobility → Budget → Archit
 - **Role**: Mover. Order the cities Destination already chose; label each hop road / rail / air.
 - **Input**: `selected_destinations`, `trip_spec` (including optional `origin_city`)
 - **Output**: `route` (ordered cities, legs, totals, A* stats)
-- **Decides (LLM)**: Start city among selected stops; mode label per hop when that quote is available. Honours "by train / flight / road"
-- **Computes**: NetworkX `DiGraph` of Mapbox **road** times; weighted A* visit order; then labels. Optional arrival hop `origin_city → first stop`. Single-city trips have no in-region A* hops — only that arrival hop if origin was named.
+- **Decides (LLM)**: The mode (road / rail / air) for every hop, including getting there and home. It knows which places have airports and when a flight is worth it, and asks for a quote first. Honours "by train / flight / road"
+- **Computes**: NetworkX `DiGraph` of **road** times (Mapbox, else OSRM); weighted A* visit order (best of every start city). Hops: arrival `origin_city → first stop`, between stops, and the return home. Group prices: air and rail per seat × travellers. A road hop is priced for the whole group by the vehicle the model chooses for the trip (own car ₹8/km with tolls, hired taxi ₹12/km, tempo traveller ₹25/km per 12 seats, bus ₹2.5/km per person; cars counted per 4 people). It sees each vehicle's cost for this group next to the fares. It is told the trip budget, and prefers train or road when flights would eat it. **Guard**: a drive longer than the daily travel limit is replaced by the fastest flight or train that exists (Delhi to Chennai is never a drive) unless the traveller asked for road
 - **Must not**: Add new cities, invent visit order, or pick hotels
-- **Tools bound**: `quote_transport`, `search_flights`, `check_transport_availability`, `calculate_route_cost`
+- **Tools bound**: `search_public_transport` (LLM flight/train quote; a town without an airport is quoted with the ride to the nearest one), `check_transport_disruptions`. The code uses `get_directions`, `estimate_road_cost` and `calculate_route_cost`
 - **Algorithms (not LLM tools)**: `build_travel_graph`, `astar_route_search` (`algorithms/astar.py`)
 - **Instruction**: "You are Odyssey's Mobility agent — the mover, not the city picker."
 
@@ -145,12 +147,12 @@ Graph order (locked): Analyst → Destination → Mobility → Budget → Archit
 
 - **Role**: Money optimizer. Runs **after** Mobility so transport cost is already in the total.
 - **Input**: `trip_spec`, `selected_destinations`, `route`, activities
-- **Output**: `budget_breakdown`, `accommodation_options`, `excluded_activity_ids`
-- **Decides (LLM)**: Hotel tier (budget/mid/premium); cheapest vs highest-rated hotel; which activities to drop if over ceiling
-- **Computes**: Line items (hotels × nights, food, activities, transport); `validate_budget`; cheapest-damage cuts keep ≥1 activity per city
+- **Output**: `budget_breakdown`, `accommodation_options`, `excluded_activity_ids`, `stay_plan` (days and nights per city, shared with the Architect so the bill matches the schedule)
+- **Decides (LLM)**: Hotel tier (budget/mid/premium), which picks the hotel (cheapest / middle / best rated); which activities to drop if over ceiling
+- **Computes**: Line items (hotels per room × nights, food priced for the region, activities for the sights that fit, transport = the journeys plus a flat ₹500 a day per group of four for autos and cabs between the sights); `validate_budget`; cheapest-damage cuts keep ≥1 activity per city
 - **Must not**: Reorder cities, invent rupee totals, or build the hour schedule. Hotel/flight quotes are market estimates, not bookable inventory.
-- **Tools bound**: `search_hotels`, `search_hotel_offers`, `estimate_food_costs`, `validate_budget`, `generate_tradeoff_options`
-- **In-node (not bound)**: `calculate_activity_costs`
+- **Tools bound**: `search_hotels`, `estimate_food_costs`. The code uses `validate_budget` and `generate_tradeoff_options`
+- **In-node (not bound)**: `calculate_activity_costs`, `estimate_local_transport`
 - **Instruction**: "You are Odyssey's Budget agent — the money optimizer, not the scheduler."
 
 ---
@@ -160,10 +162,10 @@ Graph order (locked): Analyst → Destination → Mobility → Budget → Archit
 - **Role**: Scheduler. Pack activities, meals, and overnight stays into days on the A* city order.
 - **Input**: ordered cities, activities, route, budget (selected hotels)
 - **Output**: `draft_itinerary`, `optimization_score`
-- **Decides (LLM)**: Pace = relaxed (2 sights, 09–18) / moderate (3, 08–21) / packed (4, 07–22)
-- **Computes**: Days per city; opening hours; Mapbox travel matrix; OR-Tools VRPTW; overnight hotel every night except the last; multi-objective score
+- **Decides**: nothing by model. Pace (relaxed 2 sights 09–18 / moderate 3, 08–21 / packed 4, 07–22) comes from the Analyst's reading of the request
+- **Computes**: Weather for each day (a rainy day schedules indoor sights first, outdoor ones wait for a dry day); the stay plan; time lost to arriving, long transfers and the trip home; opening hours; Mapbox travel matrix; OR-Tools VRPTW with meals; dated days; overnight hotel every night except the last; multi-objective score; replaces Budget's activity estimate with what was scheduled
 - **Must not**: Reorder cities, pick hotels, or invent travel times
-- **Tools bound**: `get_opening_hours`, `travel_time_matrix`, `validate_time_windows`
+- **Tools bound**: none, no model call. The code uses the travel matrix and the solver
 - **Algorithms (not LLM tools)**: `solve_day_schedule` (OR-Tools VRPTW), `compute_score`
 - **In-node**: `check_schedule_conflicts` after the solve
 - **Instruction**: "You are Odyssey's Itinerary Architect — the scheduler, not the router."
@@ -176,11 +178,20 @@ Graph order (locked): Analyst → Destination → Mobility → Budget → Archit
 - **Input**: draft itinerary, budget, disruptions, `iteration_count`
 - **Output**: `validation_report`, `replan_directives`, `final_itinerary` (when valid or out of loops)
 - **Decides (LLM)**: Which of destination / mobility / budget / architect to call for the cheapest-damage repair
-- **Computes**: Budget / schedule / weather / closure / transport checks; severity sort. Last allowed pass returns a best-effort plan with warnings.
+- **Computes**: Budget / schedule / closure / transport checks, plus "a day with nothing left to see" and "a transfer over the daily limit" (both go back to Destination with the reason, while a plan is first built, not during an edit). A long road trip to get there or home, a trip that is all travel with no sight, and a budget mostly spent on fares go back to Mobility. A hop with no route at all goes back to Destination, as does a city with no hotel even after Budget looked again (Destination must choose a nearby base and not the same city). An issue already retried is not sent again. The agent it goes back to sees the reason. Last allowed pass returns a best-effort plan.
 - **Must not**: Rewrite days itself or fan-out every agent
-- **Tools bound**: `validate_budget`, `check_schedule_conflicts`, `check_transport_disruptions`, `check_attraction_availability`, `check_weather_disruptions`
+- **Tools bound**: `check_weather_disruptions`, `check_transport_disruptions` (to verify a reported event). The code uses `validate_budget` and `check_schedule_conflicts`
 - **Routing**: LangGraph conditional edges (`orchestration/routing.py`). The JSON reply **is** the replan directive — there is no separate `generate_replan_directive` tool.
 - **Instruction**: "You are Odyssey's Critic & Replanner — the coordinator, not a seventh planner."
+
+### Edit Router (`backend/agents/edit_router.py`)
+
+- **Role**: Front door for changes to an existing plan. The Critic only reacts to problems it can detect, so it can't read "make day 2 lighter".
+- **Input**: `edit_request` + the current plan. **Output**: updated `trip_spec`, standing `edit_locks`, `edit_directive`, or an `assistant_reply` for a question.
+- **Decides (LLM)**: what changed, question vs change, and `route_to` (which agent to re-run).
+- **Computes**: checks names against the plan; applies the change; the entry point may never be later than the earliest agent whose inputs changed.
+- **Tools bound**: `get_plan_day`, `find_in_plan`, `list_alternative_cities`, `geocode_location`
+- **Needs a model**: without one it leaves the plan alone and says so.
 
 ---
 
@@ -212,6 +223,15 @@ class TripState(TypedDict):
     replan_directives: List[ReplanDirective]
     iteration_count: int
 
+    # Stay plan (Budget writes it, the Architect schedules from it)
+    stay_plan: List[StayBlock]
+
+    # Prompt-based editing
+    edit_request: Optional[str]
+    edit_directive: Optional[EditDirective]
+    edit_locks: EditLocks            # what the user has asked for; every agent reads it
+    assistant_reply: Optional[str]   # answers and clarifying questions
+
     # Live events
     disruptions: List[Disruption]
     agent_messages: Annotated[List[str], operator.add]  # streaming log
@@ -226,14 +246,14 @@ class TripState(TypedDict):
 ### A* Destination Ordering (`algorithms/astar.py`)
 - **Why A* when Maps API exists**: Mapbox/Google gives you road directions between two chosen points (A→B). It does NOT decide the **order** to visit multiple cities (should Day 2 be Munnar or Thekkady?). That ordering problem requires search — that's A*.
 - Two distinct layers:
-  - **A* (meta-level)**: Finds the optimal order to visit N candidate destinations. Graph nodes = cities, edges = travel time from Mapbox Distance Matrix. State = `(current_city, frozenset(visited), elapsed_days)`. Heuristic = min remaining travel between unvisited cities.
+  - **A* (meta-level)**: Finds the optimal order to visit N candidate destinations. Graph nodes = cities, edges = road travel time from Mapbox Directions (OSRM if Mapbox is unavailable). State = `(current_city, frozenset(visited), elapsed_days)`. Heuristic = min remaining travel between unvisited cities.
   - **Mapbox Directions API (road-level)**: Once order is decided, gives actual road route, duration, and polyline for the map.
 - Weight escalation: `f(n) = g(n) + (1 + ε)·h(n)` — anytime behavior, always returns a plan
 - Used by: Mobility Agent
 
 ### VRPTW Scheduling (`algorithms/csp_solver.py`)
 - Library: `ortools.constraint_solver.pywrapcp.RoutingModel` (Vehicle Routing with Time Windows)
-- Nodes = activities + hotels; edges = travel time matrix from Mapbox Directions API
+- Nodes = activities + hotels; edges = travel time between the day's stops (straight-line at city speed: the stops are a few km apart)
 - Time windows per node = attraction opening hours (fetched from Foursquare)
 - Service times = activity durations; vehicle capacity = daily hour budget
 - Soft constraints: meal windows (penalty for violations), rest blocks
@@ -292,6 +312,7 @@ app = graph.compile(checkpointer=MemorySaver())
 
 - `POST /api/plan` → starts LangGraph session, returns `thread_id`, begins streaming
 - `GET /api/plan/{thread_id}/stream` → SSE stream; uses `graph.astream(version="v2", stream_mode=["messages","updates","custom"], subgraphs=True)`
+- `POST /api/revise` → a free-text edit; the stream then starts at the Edit Router (from the stored state, so it works after a restart)
 - `POST /api/disrupt` → injects `Disruption` into live state via `graph.aupdate_state()` → triggers Critic replan
 - `GET /api/itinerary/{thread_id}` → fetch finalized itinerary from checkpoint
 - `GET /api/health` → readiness check
@@ -317,7 +338,7 @@ Key FastAPI pattern: graph compiled **once at startup** via `lifespan`; `thread_
 - `lib/useAgentStream.ts` — Custom hook: reads SSE chunks, `startTransition` throttles React re-renders
 - `components/AgentTimeline.tsx` — Real-time SSE-driven agent status cards (running / done / error states)
 - `components/ItineraryView.tsx` — Day-by-day accordion schedule with time slots
-- `components/MapView.tsx` — **Mapbox GL JS** interactive map with destination markers + route polyline
+- `components/MapView.tsx` — **MapLibre GL JS** interactive map (OpenStreetMap tiles) with destination markers + route polyline
 - `components/DisruptionPanel.tsx` — weather, closure, and budget-cut controls
 - `components/BudgetChart.tsx` — Cost breakdown bar chart (recharts)
 
@@ -328,7 +349,7 @@ Key FastAPI pattern: graph compiled **once at startup** via `lifespan`; `thread_
 ```
 backend/                 FastAPI + LangGraph
 frontend/                Next.js 14 App Router
-data/kerala_seed.json    Demo fallback dataset
+backend/sample_trip.json A saved plan for demos when no model is available
 PLAN.md
 README.md
 ```
@@ -337,7 +358,7 @@ README.md
 
 ## Architecture verdict (locked)
 
-Keep **exactly these 6 agents**. Do not add Hotel, Weather, Supervisor, or LLM Council agents.
+Keep **these 6 planning agents**, plus the **Edit Router** for changes after a plan exists. Do not add Hotel, Weather, Supervisor, or LLM Council agents.
 
 That set is the right grain for a multi-agent trip planner:
 - one parser, one explorer, one money optimizer, one mover, one scheduler, one critic
@@ -351,7 +372,7 @@ Do **not** fan-out Mobility and Budget in parallel. LangGraph would run Architec
 - **Performance**: feasible itinerary; maximize `Score = w_p P + w_q Q + w_r R + w_b B - w_t T - w_c C`; stay under budget and daily travel cap
 - **Environment**: partially observable, dynamic, sequential, multi-agent; live APIs plus simulated disruptions
 - **Actuators**: write TripState, emit itinerary, trigger targeted replan, ask user for missing fields
-- **Sensors**: NL request, Mapbox, Foursquare, Gemini travel market, OpenWeatherMap, user HITL replies, disruption events
+- **Sensors**: NL request, Mapbox / OSRM, Open-Meteo, LLM market data, user HITL replies, disruption events
 
 ## Agent conflict protocol
 
@@ -365,9 +386,18 @@ Mobility: Munnar adds 3h travel
 
 Critic picks the cheapest-damage repair (drop activity, cheaper hotel, swap city) and re-invokes only that agent.
 
-## Offline fallback
+## One fallback each
 
-`travel_market.py` asks Gemini, then Groq, for local hotels and airfares. If neither model is configured, it uses `data/kerala_seed.json` only when that city is in the file.
+| Need | Source | Fallback |
+|---|---|---|
+| Model | Gemini (each key in turn) | Groq; if all are rate-limited, planning stops with a clear message |
+| Places, sights, hotels, flights and trains | the model | none |
+| Geocoding | Mapbox | Nominatim, then "not found" |
+| Drive times | Mapbox | OSRM (times x1.4), then "unavailable" |
+| Food prices | the model | one flat default per tier |
+| Weather | Open-Meteo | none ("Weather unavailable") |
+
+With no model the demo path is the saved sample trip (`POST /api/sample`).
 
 ---
 
@@ -376,6 +406,6 @@ Critic picks the cheapest-damage repair (drop activity, cheaper hotel, swap city
 - **PEAS**: Performance (optimization score), Environment (real APIs, dynamic disruptions), Actuators (itinerary + replan), Sensors (weather, places, transport)
 - **Agent Analysis**: 6 agents, partially observable + dynamic + multi-agent environment
 - **Algorithmic Modeling**: A* (routing), OR-Tools CSP (scheduling), multi-objective weighted scoring
-- **Tool Selection**: LangGraph (`MemorySaver`, conditional routing), LangChain `@tool`, FastAPI SSE, Mapbox, Gemini travel market, OpenWeatherMap, OR-Tools VRPTW, NetworkX, Foursquare Places
+- **Tool Selection**: LangGraph (`MemorySaver`, conditional routing), LangChain `@tool`, FastAPI SSE, Mapbox, OSRM, OpenStreetMap/MapLibre, Open-Meteo, LLM market data, OR-Tools VRPTW, NetworkX, Foursquare Places
 - **Multi-Agent Interaction**: Shared `TripState`, sequential specialists, Critic conflict resolution and targeted replan
 - **Demo**: Part A — normal 5-day Kerala planning; Part B — live disruption simulation with targeted replan

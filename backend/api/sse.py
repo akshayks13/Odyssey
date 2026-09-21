@@ -5,7 +5,7 @@ import json
 from typing import Any, AsyncGenerator
 
 from models.schemas import BudgetBreakdown, Itinerary, Route, ValidationReport
-from services.itinerary_service import save_itinerary
+from services.itinerary_service import save_itinerary, save_state
 
 _STREAM_MODES = ["messages", "updates", "custom"]
 _KNOWN_AGENTS = {
@@ -15,6 +15,7 @@ _KNOWN_AGENTS = {
     "budget_agent",
     "itinerary_architect",
     "critic_replanner",
+    "edit_router",
 }
 
 
@@ -22,11 +23,26 @@ def sse_event(event: dict) -> str:
     return f"data: {json.dumps(event, default=str)}\n\n"
 
 
+def _assumptions(spec) -> list[str]:
+    """What the Analyst filled in because the traveller didn't say, with the values used."""
+    if not spec:
+        return []
+    text = {
+        "duration": f"trip length: {spec.duration_days} days",
+        "travellers": f"travellers: {spec.travellers}",
+        "budget": f"budget: ₹{spec.budget_inr:,.0f}",
+        "start_date": f"start date: {spec.start_date}",
+    }
+    return [text[n] for n in spec.needs_clarification if n in text]
+
+
 def serialize_final_state(values: dict) -> dict:
     itinerary: Itinerary | None = values.get("final_itinerary") or values.get("draft_itinerary")
     budget: BudgetBreakdown | None = values.get("budget_breakdown")
     route: Route | None = values.get("route")
     validation: ValidationReport | None = values.get("validation_report")
+    spec = values.get("trip_spec")
+    directive = values.get("edit_directive")
 
     return {
         "itinerary": itinerary.model_dump() if itinerary else None,
@@ -38,6 +54,11 @@ def serialize_final_state(values: dict) -> dict:
         "iteration_count": values.get("iteration_count", 0),
         "selected_destinations": [d.model_dump() for d in values.get("selected_destinations", [])],
         "accommodation_options": [h.model_dump() for h in values.get("accommodation_options", [])],
+        "trip": {"duration_days": spec.duration_days, "start_date": spec.start_date, "travellers": spec.travellers} if spec else None,
+        "assumptions": _assumptions(spec),
+        "reply": values.get("assistant_reply"),
+        "summary": directive.summary if directive and directive.intent == "modify" else None,
+        "reran_from": directive.entry if directive and directive.intent == "modify" else None,
     }
 
 
@@ -130,12 +151,14 @@ async def stream_graph_run(graph: Any, thread_id: str, input_state: dict | None,
                         )
                     messages = (node_output or {}).get("agent_messages", []) if isinstance(node_output, dict) else []
                     message = messages[-1] if messages else f"{node_name} completed."
+                    output = node_output if isinstance(node_output, dict) else None
                     yield sse_event(
                         {
                             "type": "step_complete",
                             "agent": node_name,
                             "message": message,
-                            "data": _compact_node_data(node_output if isinstance(node_output, dict) else None),
+                            "meta": (output or {}).get("agent_meta") or {},
+                            "data": _compact_node_data(output),
                         }
                     )
 
@@ -169,8 +192,6 @@ async def stream_graph_run(graph: Any, thread_id: str, input_state: dict | None,
                             "data": {"content": text[:500]},
                         }
                     )
-                elif text.strip():
-                    yield sse_event({"type": "message", "agent": agent or None, "message": text[:500]})
 
             elif mode == "custom":
                 payload = data if isinstance(data, dict) else {"data": data}
@@ -179,6 +200,8 @@ async def stream_graph_run(graph: Any, thread_id: str, input_state: dict | None,
         final_values = graph.get_state(config).values
         done_payload = serialize_final_state(final_values)
         save_itinerary(thread_id, done_payload)
+        if done_payload["itinerary"] is not None:  # a question or a clarifying ask leaves the stored plan as it was
+            save_state(thread_id, final_values)
         yield sse_event({"type": "done", **done_payload})
     except Exception as exc:  # noqa: BLE001 — surface any failure to the client as an SSE error event
         yield sse_event({"type": "error", "message": str(exc)})

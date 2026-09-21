@@ -1,5 +1,4 @@
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
-
+// Same-origin: next.config.mjs forwards /api/* to the backend, so no CORS and no address to keep in sync.
 export interface DisruptPayload {
   thread_id: string;
   type: "weather" | "closure" | "transport" | "budget_cut";
@@ -10,7 +9,33 @@ export interface DisruptPayload {
 }
 
 export async function fetchItinerary(threadId: string) {
-  const res = await fetch(`${API_BASE_URL}/api/itinerary/${threadId}`, { cache: "no-store" });
+  const res = await fetch(`/api/itinerary/${encodeURIComponent(threadId)}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to fetch itinerary (${res.status})`);
   return res.json();
+}
+
+export async function postJson<T = unknown>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    let detail = `Request failed (${res.status})`;
+    try {
+      const data = await res.json();
+      if (data?.detail) detail = String(data.detail);
+    } catch {
+      /* keep the generic message */
+    }
+    throw new Error(detail);
+  }
+  return res.json() as Promise<T>;
+}
+
+/** Opens the saved sample trip as a new thread. Needs no model. */
+export async function openSample(): Promise<string> {
+  const data = await postJson<{ thread_id: string }>("/api/sample");
+  return data.thread_id;
 }

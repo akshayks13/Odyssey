@@ -65,7 +65,9 @@ def compute_score(
         + w["b"] * budget_efficiency
     )
     negative = w["t"] * travel_burden + w["c"] * constraint_violations
-    total = max(0.0, min(1.0, positive - negative))
+    # The positive weights sum to 0.7, so without normalising a perfect plan tops out at 70%.
+    max_positive = w["p"] + w["q"] + w["r"] + w["b"]
+    total = max(0.0, min(1.0, (positive - negative) / max_positive))
 
     return {
         "total": round(total, 4),

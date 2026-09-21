@@ -1,16 +1,21 @@
-"""LangGraph pipeline: Analyst → Destination → Mobility → Budget → Architect → Critic."""
+"""LangGraph pipeline: Analyst → Destination → Mobility → Budget → Architect → Critic.
+
+A plan starts at the Analyst. A later user edit starts at the Edit Router, which re-enters the
+pipeline at the shallowest agent the change touches; the Critic validates every path.
+"""
 from __future__ import annotations
 
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 
 from agents.budget_agent import budget_agent_node
 from agents.critic_replanner import critic_replanner_node
 from agents.destination_agent import destination_agent_node
+from agents.edit_router import edit_router_node
 from agents.itinerary_architect import itinerary_architect_node
 from agents.mobility_agent import mobility_agent_node
 from agents.trip_analyst import trip_analyst_node
-from orchestration.routing import route_after_critic
+from orchestration.routing import route_after_analyst, route_after_critic, route_after_edit, route_entry
 from orchestration.state import TripState
 
 
@@ -23,9 +28,28 @@ def build_graph():
     graph.add_node("budget_agent", budget_agent_node)
     graph.add_node("itinerary_architect", itinerary_architect_node)
     graph.add_node("critic_replanner", critic_replanner_node)
+    graph.add_node("edit_router", edit_router_node)
 
-    graph.set_entry_point("trip_analyst")
-    graph.add_edge("trip_analyst", "destination_agent")
+    graph.add_conditional_edges(
+        START,
+        route_entry,
+        {"plan": "trip_analyst", "revise": "edit_router"},
+    )
+    graph.add_conditional_edges(
+        "edit_router",
+        route_after_edit,
+        {
+            "replan_destination": "destination_agent",
+            "replan_mobility": "mobility_agent",
+            "replan_budget": "budget_agent",
+            "rebuild_schedule": "itinerary_architect",
+            "revalidate": "critic_replanner",
+            "answer": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "trip_analyst", route_after_analyst, {"go": "destination_agent", "ask": END}
+    )
     graph.add_edge("destination_agent", "mobility_agent")
     graph.add_edge("mobility_agent", "budget_agent")
     graph.add_edge("budget_agent", "itinerary_architect")

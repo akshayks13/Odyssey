@@ -26,8 +26,7 @@ export interface RouteLeg {
   available: boolean;
   summary?: string | null;
   airline?: string | null;
-  origin_iata?: string | null;
-  destination_iata?: string | null;
+  vehicle?: string | null;
   source?: string | null;
   reason?: string | null;
 }
@@ -40,6 +39,7 @@ export interface Route {
   total_cost_inr: number;
   search_algorithm: string;
   nodes_expanded: number;
+  return_leg?: RouteLeg | null;
 }
 
 export interface Hotel {
@@ -77,13 +77,31 @@ export interface ScheduledItem {
   start_hour: number;
   end_hour: number;
   category: string;
+  kind?: "activity" | "meal";
+  cost_inr?: number;
+}
+
+export interface DayWeather {
+  summary: string;
+  condition: string;
+  tmin?: number | null;
+  tmax?: number | null;
+  rain_mm: number;
+  rain_chance?: number | null;
+  rainy: boolean;
+  source: string;
 }
 
 export interface ItineraryDay {
   day_number: number;
   destination: string;
+  date?: string | null;
+  kind?: "sightseeing" | "travel" | "leisure";
+  note?: string | null;
+  weather?: DayWeather | null;
   items: ScheduledItem[];
   travel_leg?: RouteLeg | null;
+  departure_leg?: RouteLeg | null;
   overnight_hotel?: Hotel | null;
 }
 
@@ -102,7 +120,22 @@ export interface ValidationIssue {
   target_agent?: string | null;
 }
 
-export type AgentStatus = "pending" | "running" | "done" | "error";
+export type AgentStatus = "pending" | "running" | "done" | "error" | "kept";
+
+export interface TripInfo {
+  duration_days: number;
+  start_date?: string | null;
+  travellers: number;
+}
+
+
+/** How an agent reached its answer: shown in the timeline as evidence of tool calling. */
+export interface AgentMeta {
+  tools?: string[];
+  engine?: string | null;
+  algorithms?: string[];
+  note?: string;
+}
 
 export interface AgentStepEvent {
   type: "init" | "step_start" | "step_complete" | "tool_result" | "message" | "custom" | "done" | "error";
@@ -110,6 +143,7 @@ export interface AgentStepEvent {
   agent?: string;
   tool?: string;
   message?: string;
+  meta?: AgentMeta;
   data?: unknown;
   itinerary?: Itinerary | null;
   budget?: BudgetBreakdown | null;
@@ -119,7 +153,14 @@ export interface AgentStepEvent {
   score?: number | null;
   iteration_count?: number;
   selected_destinations?: Destination[];
+  trip?: TripInfo | null;
+  assumptions?: string[];
+  reply?: string | null;
+  summary?: string | null;
+  reran_from?: string | null;
 }
+
+export const EDIT_AGENT = "edit_router";
 
 export const AGENT_ORDER = [
   "trip_analyst",
@@ -131,6 +172,7 @@ export const AGENT_ORDER = [
 ] as const;
 
 export const STEP_LABELS: Record<string, string> = {
+  edit_router: "Your change",
   trip_analyst: "Your request",
   destination_agent: "Destinations",
   mobility_agent: "Routes",

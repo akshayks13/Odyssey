@@ -1,13 +1,14 @@
-"""Foursquare Places: nearby search, hours, and photos."""
+"""Places for a trip: the LLM lists the cities and their sights. The Foursquare helpers below are kept but not used:
+its nearby search returns every kind of venue (schools, shops, clinics), so it is not a source of sights."""
 from __future__ import annotations
 
 import httpx
 from langchain_core.tools import tool
 
 from config import FOURSQUARE_API_KEY
-from llm import get_llm, llm_decide, llm_provider_name
-from tools.mapbox_api import geocode_location, get_static_map_url
-from tools.seed_data import all_destinations, get_activities
+from llm import get_llm, llm_decide, llm_json, llm_provider_name
+from tools.mapbox_api import geocode_location, haversine_km as mapbox_haversine
+from tools import pmap
 
 FSQ_SEARCH_URL = "https://places-api.foursquare.com/places/search"
 FSQ_PLACE_URL = "https://places-api.foursquare.com/places/{fsq_id}"
@@ -146,6 +147,13 @@ def _fsq_search(destination: str, category: str | None, lat: float | None, lng: 
         return []
 
 
+def _to_float(value) -> float:
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _activity_from_llm(row: dict, destination: str, fallback_lat: float | None, fallback_lng: float | None) -> dict | None:
     name = str(row.get("name") or "").strip()
     if not name:
@@ -182,7 +190,7 @@ def _activity_from_llm(row: dict, destination: str, fallback_lat: float | None, 
         "destination": destination,
         "category": category,
         "duration_minutes": max(45, min(duration, 360)),
-        "cost_inr": float(row.get("cost_inr") or 0),
+        "cost_inr": _to_float(row.get("cost_inr")),
         "rating": max(1.0, min(5.0, rating)),
         "opening_hour": max(6, min(opening, 22)),
         "closing_hour": max(opening + 1, min(closing, 23)),
@@ -192,17 +200,10 @@ def _activity_from_llm(row: dict, destination: str, fallback_lat: float | None, 
     }
 
 
-def _llm_attractions(
-    destination: str,
-    category: str | None,
-    foursquare_names: list[str],
-    lat: float | None,
-    lng: float | None,
-) -> list[dict]:
+def _llm_attractions(destination: str, category: str | None, lat: float | None, lng: float | None) -> list[dict]:
     llm = get_llm()
     if llm is None:
         return []
-    hint = ", ".join(foursquare_names[:12]) if foursquare_names else "(none)"
     focus = f" Prefer the '{category}' theme." if category else ""
     decision = llm_decide(
         llm,
@@ -212,12 +213,11 @@ def _llm_attractions(
             "Reply ONLY with JSON: {\"attractions\":[{\"name\":str,\"category\":"
             "\"nature|adventure|culture|relaxation|food|shopping|nightlife\","
             "\"duration_minutes\":int,\"rating\":number,\"opening_hour\":int,"
-            "\"closing_hour\":int,\"lat\":number,\"lng\":number}]}."
+            "\"closing_hour\":int,\"cost_inr\":int,\"lat\":number,\"lng\":number}]}. "
+            "cost_inr is the per-person entry fee in INR for an Indian resident (0 if free)."
         ),
         user=(
             f"City: {destination}.{focus} "
-            f"Foursquare nearby names (often restaurants/shops — keep only if they are "
-            f"actual sights a traveller would visit): {hint}. "
             "Return 6-10 well-known parks, lakes, gardens, viewpoints, museums, temples "
             "or historic sites in that city. Coordinates must be in the city. "
             "Do not list hotel chains, clinics, or fast-food."
@@ -234,66 +234,86 @@ def _llm_attractions(
     return out
 
 
-def _seed_attractions(destination: str, category: str | None) -> list[dict]:
-    """Bundled activities for this city, if the dataset has any."""
-    dest = next((d for d in all_destinations() if d["name"].lower() == destination.lower()), None)
-    if dest is None:
-        return []
-    activities = get_activities(dest["name"])
-    if category:
-        activities = [a for a in activities if a["category"] == category] or activities
-    coords = dest["coordinates"]
-    out = []
-    for a in activities:
-        row = {**a, "destination": destination, "source": "seed"}
-        if coords and not row.get("coordinates"):
-            row["coordinates"] = coords
-        out.append(row)
-    return out
+_destination_cache: dict[str, list[dict]] = {}
+
+
+def _llm_destinations(region: str) -> list[dict]:
+    """Ask the model which places in a region a traveller would base themselves in.
+
+    Coordinates are taken from Mapbox when available; a model's lat/lng for a small town can be off.
+    """
+    data = llm_json(
+        "You are a travel-destination expert. You list real places within a region that a traveller "
+        "would stay in or day-trip to. Reply ONLY with JSON.",
+        (
+            f"Region: {region}. List 6-9 distinct real places (towns, cities, hill stations, beaches, "
+            "islands, districts) in or next to this region, best-known first. If the region is itself a "
+            "single city or town, list it first and then up to 4 nearby places worth an overnight or a "
+            "day trip. Coordinates must be accurate. activity_scores are 0-1 for how strongly the place "
+            "suits each theme. "
+            'Schema: {"places":[{"name":str,"lat":number,"lng":number,"description":str,'
+            '"tags":[str],"activity_scores":{"nature":n,"adventure":n,"food":n,"nightlife":n,'
+            '"relaxation":n,"culture":n,"shopping":n}}]}'
+        ),
+    )
+    rows = [r for r in (data.get("places") or []) if isinstance(r, dict) and str(r.get("name") or "").strip()]
+    # Geocode with the whole region ("Palolem, Goa, India"): "Palolem, India" alone finds a different village.
+    geos = pmap(lambda r: geocode_location.invoke({"place_name": f"{str(r['name']).strip()}, {region}"}), rows[:10], workers=5)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row, geo in zip(rows, geos):
+        name = str(row["name"]).strip()
+        if name.lower() in seen:
+            continue
+        try:
+            lat, lng = float(row["lat"]), float(row["lng"])
+        except (KeyError, TypeError, ValueError):
+            lat = lng = None
+        if geo and geo.get("source") in {"mapbox", "osm"}:
+            # Two independent answers: if they are far apart one is wrong. The model's own coordinates
+            # are kept then, because a geocoder picks a same-named village elsewhere far more often.
+            agree = lat is None or mapbox_haversine(lat, lng, geo["lat"], geo["lng"]) <= 60
+            if agree:
+                lat, lng = geo["lat"], geo["lng"]
+        if lat is None or lng is None:
+            continue
+        raw_scores = row.get("activity_scores") if isinstance(row.get("activity_scores"), dict) else {}
+        scores = {k: max(0.0, min(1.0, _to_float(raw_scores.get(k, v)))) for k, v in _DEFAULT_SCORES.items()}
+        seen.add(name.lower())
+        out.append(
+            {
+                "name": name,
+                "lat": lat,
+                "lng": lng,
+                "description": str(row.get("description") or name)[:200],
+                "tags": [str(t) for t in (row.get("tags") or [])][:6],
+                "activity_scores": scores,
+                "source": (llm_provider_name() or "llm").split(":")[0],
+            }
+        )
+    return out[:9]
 
 
 @tool(parse_docstring=True)
 def search_destinations(region: str) -> list[dict]:
-    """Find candidate cities in a region.
+    """Find candidate places to base a trip in a region.
 
-    Uses bundled cities when the region matches that dataset, otherwise
-    Mapbox geocoding. Attractions are fetched separately.
+    Asks the language model for real places in the region (any country). Empty if it cannot answer.
 
     Args:
-        region: Region or city name, e.g. "Kerala, India".
+        region: Region or city name, e.g. "Kerala, India" or "Tuscany, Italy".
 
     Returns:
         List of dicts with name, lat, lng, description, tags, activity_scores.
     """
-    key = region.lower().split(",")[0].strip()
-    seed_hits = [
-        {
-            "name": d["name"],
-            "lat": d["coordinates"]["lat"],
-            "lng": d["coordinates"]["lng"],
-            "description": d["description"],
-            "tags": d["tags"],
-            "activity_scores": d["activity_scores"],
-            "source": "seed",
-        }
-        for d in all_destinations()
-        if key in d.get("region", "").lower() or key in d["name"].lower()
-    ]
-    if seed_hits:
-        return seed_hits
+    cache_key = region.strip().lower()
+    if cache_key in _destination_cache:
+        return _destination_cache[cache_key]
 
-    geo = geocode_location.invoke({"place_name": region})
-    return [
-        {
-            "name": geo.get("name") or region.split(",")[0].strip(),
-            "lat": geo["lat"],
-            "lng": geo["lng"],
-            "description": f"Trip base for {region}",
-            "tags": [],
-            "activity_scores": dict(_DEFAULT_SCORES),
-            "source": geo.get("source", "mapbox"),
-        }
-    ]
+    rows = _llm_destinations(region)
+    if rows:  # an empty answer is never remembered, so the next call asks again
+        _destination_cache[cache_key] = rows
+    return rows
 
 
 @tool(parse_docstring=True)
@@ -308,8 +328,8 @@ def search_attractions(
     Args:
         destination: Name of the destination, e.g. "Munnar".
         category: Optional category filter, e.g. "nature" or "adventure".
-        lat: Optional latitude to search around.
-        lng: Optional longitude to search around.
+        lat: Optional latitude, used when a sight comes back without coordinates.
+        lng: Optional longitude, used when a sight comes back without coordinates.
 
     Returns:
         List of activity dicts with id, name, category, duration_minutes,
@@ -319,128 +339,12 @@ def search_attractions(
     if cache_key in _attraction_cache:
         return _attraction_cache[cache_key]
 
-    fsq_places = _fsq_search(destination, category, lat, lng)
-    fsq_acts = [_place_to_activity(p, destination, category) for p in fsq_places if p.get("name")]
-    for act in fsq_acts[:8]:
-        _enrich_hours(act)
-
-    llm_acts = _llm_attractions(
-        destination,
-        category,
-        [a["name"] for a in fsq_acts],
-        lat,
-        lng,
-    )
-    out = llm_acts or fsq_acts or _seed_attractions(destination, category)
-    _attraction_cache[cache_key] = out
+    # The LLM is the source of sights. Foursquare's nearby search returns every kind of venue
+    # (schools, shops, clinics), so its helpers are kept in this file but not used here.
+    out = _llm_attractions(destination, category, lat, lng)
+    if out:  # don't remember a failed lookup
+        _attraction_cache[cache_key] = out
     return out
 
 
-@tool(parse_docstring=True)
-def get_opening_hours(activity_id: str, destination: str) -> dict:
-    """Get opening/closing hours via Foursquare Places Details, else seed data.
-
-    Args:
-        activity_id: The activity's id (Foursquare fsq_id or seed id).
-        destination: Destination the activity belongs to (used for seed lookup).
-
-    Returns:
-        dict with opening_hour and closing_hour (24h clock).
-    """
-    headers = _fsq_headers()
-    if headers:
-        try:
-            resp = httpx.get(
-                FSQ_PLACE_URL.format(fsq_id=activity_id),
-                headers=headers,
-                params={"fields": "hours,name"},
-                timeout=_TIMEOUT,
-            )
-            if resp.status_code == 200:
-                hours = _hours_from_details(resp.json())
-                if hours:
-                    return {
-                        "opening_hour": hours[0],
-                        "closing_hour": hours[1],
-                        "source": "foursquare",
-                    }
-        except Exception:
-            pass
-
-    for act in get_activities(destination):
-        if act["id"] == activity_id:
-            return {
-                "opening_hour": act["opening_hour"],
-                "closing_hour": act["closing_hour"],
-                "source": "seed",
-            }
-    return {"opening_hour": 9, "closing_hour": 18, "source": "default"}
-
-
-@tool(parse_docstring=True)
-def get_place_photos(place_name: str, lat: float | None = None, lng: float | None = None, fsq_id: str | None = None) -> dict:
-    """Photos for a place from Foursquare, else a Mapbox Static image.
-
-    Args:
-        place_name: Human-readable place name (used to geocode if lat/lng omitted).
-        lat: Optional latitude.
-        lng: Optional longitude.
-        fsq_id: Optional Foursquare place id.
-
-    Returns:
-        dict with photos (list of urls) and source.
-    """
-    headers = _fsq_headers()
-    if headers and fsq_id:
-        try:
-            resp = httpx.get(FSQ_PHOTOS_URL.format(fsq_id=fsq_id), headers=headers, params={"limit": 3}, timeout=_TIMEOUT)
-            resp.raise_for_status()
-            payload = resp.json()
-            urls = []
-            photos = payload if isinstance(payload, list) else payload.get("photos") or []
-            for photo in photos:
-                prefix, suffix = photo.get("prefix"), photo.get("suffix")
-                if prefix and suffix:
-                    urls.append(f"{prefix}original{suffix}")
-            if urls:
-                return {"photos": urls, "source": "foursquare"}
-        except Exception:
-            pass
-
-    if lat is None or lng is None:
-        geo = geocode_location.invoke({"place_name": place_name})
-        lat, lng = geo["lat"], geo["lng"]
-    static = get_static_map_url.invoke({"lat": lat, "lng": lng})
-    if static.get("url"):
-        return {"photos": [static["url"]], "source": static["source"]}
-    return {"photos": [], "source": "none"}
-
-
-@tool(parse_docstring=True)
-def check_attraction_availability(activity_id: str, destination: str) -> dict:
-    """Check whether an attraction appears open (Foursquare hours / seed hours).
-
-    Args:
-        activity_id: Activity id.
-        destination: City the activity belongs to.
-
-    Returns:
-        dict with available (bool), opening_hour, closing_hour, source.
-    """
-    hours = get_opening_hours.invoke({"activity_id": activity_id, "destination": destination})
-    open_h, close_h = hours["opening_hour"], hours["closing_hour"]
-    return {
-        "available": close_h - open_h >= 1,
-        "opening_hour": open_h,
-        "closing_hour": close_h,
-        "source": hours.get("source", "default"),
-    }
-
-
-__all__ = [
-    "search_destinations",
-    "search_attractions",
-    "get_opening_hours",
-    "get_place_photos",
-    "check_attraction_availability",
-]
+__all__ = ["search_destinations", "search_attractions"]

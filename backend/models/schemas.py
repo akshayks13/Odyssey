@@ -35,7 +35,7 @@ class TripConstraints(BaseModel):
 class TripSpec(BaseModel):
     """Structured trip specification produced by the Trip Analyst Agent."""
 
-    destination_region: str = Field(..., description="Broad region/state/country, e.g. 'Kerala, India'")
+    destination_region: str = Field(default="", description="Broad region/state/country, e.g. 'Goa, India'. Empty when the user did not say.")
     duration_days: int = Field(..., ge=1, le=30)
     travellers: int = Field(default=1, ge=1)
     budget_inr: float = Field(..., gt=0)
@@ -44,6 +44,7 @@ class TripSpec(BaseModel):
     start_date: Optional[str] = None  # ISO date, optional
     origin_city: Optional[str] = None
     needs_clarification: list[str] = Field(default_factory=list)
+    clarifying_question: Optional[str] = None  # set when the request cannot be planned yet
     raw_input: str = ""
 
 
@@ -69,6 +70,7 @@ class Activity(BaseModel):
     preference_score: float = 0.5
     coordinates: Optional[Coordinates] = None
     is_closed: bool = False  # set true by disruption injection
+    source: str = ""  # "foursquare" | "seed" | llm provider name
 
 
 class Destination(BaseModel):
@@ -101,9 +103,8 @@ class RouteLeg(BaseModel):
     cost_inr: float = 0.0
     available: bool = True
     summary: Optional[str] = None
-    airline: Optional[str] = None
-    origin_iata: Optional[str] = None
-    destination_iata: Optional[str] = None
+    airline: Optional[str] = None  # operator: airline or railway
+    vehicle: Optional[str] = None  # for a road hop: own_car, taxi, tempo_traveller or bus
     source: Optional[str] = None
     reason: Optional[str] = None
 
@@ -116,6 +117,7 @@ class Route(BaseModel):
     total_cost_inr: float = 0.0
     search_algorithm: str = "weighted_astar"
     nodes_expanded: int = 0
+    return_leg: Optional[RouteLeg] = None  # last stop -> origin_city, when an origin was named
 
 
 # ---------------------------------------------------------------------------
@@ -165,13 +167,40 @@ class ScheduledItem(BaseModel):
     start_hour: float  # decimal hour, e.g. 9.5 = 09:30
     end_hour: float
     category: str = "general"
+    kind: str = "activity"  # activity | meal
+    cost_inr: float = 0.0  # per person
+
+
+class StayBlock(BaseModel):
+    """Days and nights spent in one city. Shared by Budget (hotel bill) and Architect (schedule)."""
+
+    destination: str
+    days: int
+    nights: int
+    travel_day: bool = False  # first day is consumed by a long transfer
+
+
+class DayWeather(BaseModel):
+    summary: str = ""
+    condition: str = ""
+    tmin: Optional[float] = None
+    tmax: Optional[float] = None
+    rain_mm: float = 0.0
+    rain_chance: Optional[int] = None
+    rainy: bool = False
+    source: str = "forecast"  # forecast | last year
 
 
 class ItineraryDay(BaseModel):
     day_number: int
     destination: str
+    date: Optional[str] = None  # ISO date
+    kind: str = "sightseeing"  # sightseeing | travel | leisure
+    note: Optional[str] = None
+    weather: Optional[DayWeather] = None
     items: list[ScheduledItem] = Field(default_factory=list)
     travel_leg: Optional[RouteLeg] = None
+    departure_leg: Optional[RouteLeg] = None
     overnight_hotel: Optional[Hotel] = None
 
 
@@ -198,11 +227,12 @@ class ValidationIssue(BaseModel):
     severity: IssueSeverity = IssueSeverity.MEDIUM
     message: str = ""
     target_agent: Optional[str] = None  # which agent should fix this
+    avoid: list[str] = Field(default_factory=list)  # places the fix must not use again
 
 
 class ValidationReport(BaseModel):
     valid: bool = True
-    issues: list[ValidationIssue] = Field(default_factory=list)
+    issues: list[ValidationIssue] = Field(default_factory=list)  # blocking; drive replans
     score: float = 0.0
 
 
@@ -235,3 +265,58 @@ class Disruption(BaseModel):
     description: str
     day: Optional[int] = None
     new_budget_inr: Optional[float] = None
+
+
+# ---------------------------------------------------------------------------
+# Prompt-based editing
+# ---------------------------------------------------------------------------
+
+class EditLocks(BaseModel):
+    """What the user has asked for so far. Every specialist reads these, so a later replan does not undo an edit."""
+
+    pinned_cities: list[str] = Field(default_factory=list)
+    excluded_cities: list[str] = Field(default_factory=list)
+    preferred_mode: Optional[str] = None  # road | rail | air
+    hotel_prefs: dict[str, str] = Field(default_factory=dict)  # city (lowercase) or "*" -> cheapest | best | hotel name
+    excluded_activities: list[str] = Field(default_factory=list)
+    pinned_activities: dict[str, int] = Field(default_factory=dict)  # activity name -> day number
+    free_days: list[int] = Field(default_factory=list)
+    light_days: list[int] = Field(default_factory=list)
+    pace: Optional[str] = None  # relaxed | moderate | packed
+    day_start_hour: Optional[float] = None
+
+    def describe(self) -> list[str]:
+        out = []
+        if self.pinned_cities:
+            out.append("cities: " + ", ".join(self.pinned_cities))
+        if self.excluded_cities:
+            out.append("avoid: " + ", ".join(self.excluded_cities))
+        if self.preferred_mode:
+            out.append(f"travel by {self.preferred_mode}")
+        out += [f"hotel ({city}): {pref}" for city, pref in self.hotel_prefs.items()]
+        if self.excluded_activities:
+            out.append("skip: " + ", ".join(self.excluded_activities))
+        out += [f"{name} on day {day}" for name, day in self.pinned_activities.items()]
+        if self.free_days:
+            out.append(f"free days: {self.free_days}")
+        if self.light_days:
+            out.append(f"light days: {self.light_days}")
+        if self.pace:
+            out.append(f"pace: {self.pace}")
+        if self.day_start_hour is not None:
+            out.append(f"start at {self.day_start_hour:g}:00")
+        return out
+
+
+class EditDirective(BaseModel):
+    """What the Edit Router decided a user message means."""
+
+    intent: str = "modify"  # modify | answer
+    summary: str = ""
+    reply: Optional[str] = None  # the answer, for a question
+    spec_patch: dict = Field(default_factory=dict)  # TripSpec fields to change
+    add_cities: list[str] = Field(default_factory=list)
+    remove_cities: list[str] = Field(default_factory=list)
+    lock_updates: EditLocks = Field(default_factory=EditLocks)
+    disruptions: list[Disruption] = Field(default_factory=list)
+    entry: str = "answer"  # agent to re-run from, or "answer"

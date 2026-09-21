@@ -1,148 +1,135 @@
-"""OpenWeatherMap current conditions and 5-day forecast."""
+"""Weather for trip dates from Open-Meteo (free, no key): a real forecast when the dates are close,
+and the same dates last year as a seasonal guide when they are not."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 import httpx
 from langchain_core.tools import tool
 
-from config import OPENWEATHER_API_KEY
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+FORECAST_HORIZON_DAYS = 15  # Open-Meteo forecasts up to 16 days ahead
 
-WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
-FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
+# WMO weather codes, as published by Open-Meteo.
+_CONDITIONS = {
+    0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Fog",
+    51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle", 56: "Freezing drizzle", 57: "Freezing drizzle",
+    61: "Light rain", 63: "Rain", 65: "Heavy rain", 66: "Freezing rain", 67: "Freezing rain",
+    71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains",
+    80: "Rain showers", 81: "Rain showers", 82: "Violent rain showers", 85: "Snow showers", 86: "Snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with hail",
+}
 
-_WET = {"Rain", "Thunderstorm", "Drizzle", "Snow"}
-
-
-def _seed_forecast(destination: str) -> dict:
-    return {
-        "condition": "Partly cloudy",
-        "rain_risk": False,
-        "summary": f"{destination}: live weather unavailable, assuming fair conditions",
-        "source": "seed_default",
-    }
-
-
-def _from_current(data: dict) -> dict:
-    weather = (data.get("weather") or [{}])[0]
-    condition = weather.get("description") or weather.get("main") or "Unknown"
-    main = weather.get("main") or ""
-    rain_mm = float((data.get("rain") or {}).get("1h") or (data.get("rain") or {}).get("3h") or 0)
-    rain_risk = main in _WET or rain_mm > 0
-    temp = (data.get("main") or {}).get("temp")
-    temp_bit = f", {round(temp)}°C" if temp is not None else ""
-    return {
-        "condition": condition,
-        "rain_risk": rain_risk,
-        "summary": f"{condition}{temp_bit}",
-        "source": "openweathermap",
-    }
+_cache: dict[tuple, list[dict]] = {}
 
 
-def _from_forecast_slots(slots: list[dict], day_offset: int) -> dict | None:
-    target = date.today() + timedelta(days=max(0, day_offset))
-    matching = []
-    for slot in slots:
-        dt_txt = slot.get("dt_txt")
-        if not dt_txt:
-            ts = slot.get("dt")
-            if ts is None:
-                continue
-            slot_day = datetime.fromtimestamp(int(ts), tz=timezone.utc).date()
-        else:
-            slot_day = datetime.strptime(dt_txt[:10], "%Y-%m-%d").date()
-        if slot_day == target:
-            matching.append(slot)
-    if not matching:
-        # Clamp to the last available calendar day in the 5-day window.
-        by_day: dict[date, list[dict]] = {}
-        for slot in slots:
-            dt_txt = slot.get("dt_txt")
-            if dt_txt:
-                slot_day = datetime.strptime(dt_txt[:10], "%Y-%m-%d").date()
-                by_day.setdefault(slot_day, []).append(slot)
-        if not by_day:
-            return None
-        last_day = max(by_day)
-        matching = by_day[last_day]
-    pops = [float(s.get("pop") or 0) for s in matching]
-    rain_chance = int(round(max(pops) * 100)) if pops else 0
-    # Prefer a midday slot for the condition text.
-    chosen = matching[min(len(matching) // 2, len(matching) - 1)]
-    weather = (chosen.get("weather") or [{}])[0]
-    condition = weather.get("description") or weather.get("main") or "Unknown"
-    main = weather.get("main") or ""
-    rain_risk = rain_chance >= 50 or main in _WET
-    temp = (chosen.get("main") or {}).get("temp")
-    temp_bit = f", {round(temp)}°C" if temp is not None else ""
-    return {
-        "condition": condition,
-        "rain_risk": rain_risk,
-        "summary": f"{condition}{temp_bit}, {rain_chance}% chance of rain",
-        "source": "openweathermap",
-    }
+def _is_rainy(rain_mm: float, rain_chance: float | None) -> bool:
+    return rain_mm >= 5 or (rain_chance is not None and rain_chance >= 60)
 
 
-@tool(parse_docstring=True)
-def get_weather_forecast(destination: str, day_offset: int = 0) -> dict:
-    """Get the weather forecast for a destination N days from now.
-
-    Args:
-        destination: Destination name, e.g. "Munnar".
-        day_offset: Days from today (0 = today, up to 4 on the free 5-day forecast).
-
-    Returns:
-        dict with condition, rain_risk (bool), summary, source.
-    """
-    if OPENWEATHER_API_KEY:
-        from tools.mapbox_api import geocode_location
-
-        geo = geocode_location.invoke({"place_name": destination})
-        params = {
-            "lat": geo["lat"],
-            "lon": geo["lng"],
-            "units": "metric",
-            "appid": OPENWEATHER_API_KEY,
-        }
+def _fetch(lat: float, lng: float, start: date, end: date, historical: bool) -> list[dict]:
+    key = (round(lat, 2), round(lng, 2), start, end, historical)
+    if key in _cache:
+        return _cache[key]
+    fields = "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum"
+    if not historical:
+        fields += ",precipitation_probability_max"
+    for attempt in range(2):  # one retry: a passing network blip should not remove the weather
         try:
-            if day_offset <= 0:
-                resp = httpx.get(WEATHER_URL, params=params, timeout=5.0)
-                resp.raise_for_status()
-                return _from_current(resp.json())
-            resp = httpx.get(FORECAST_URL, params=params, timeout=5.0)
+            resp = httpx.get(
+                ARCHIVE_URL if historical else FORECAST_URL,
+                params={"latitude": lat, "longitude": lng, "daily": fields, "timezone": "auto",
+                        "start_date": start.isoformat(), "end_date": end.isoformat()},
+                timeout=10.0,
+            )
             resp.raise_for_status()
-            parsed = _from_forecast_slots(resp.json().get("list") or [], day_offset)
-            if parsed:
-                return parsed
-        except Exception:
-            pass
+            break
+        except httpx.HTTPError:
+            if attempt:
+                raise
+    daily = resp.json().get("daily") or {}
+    rows = []
+    for i, day in enumerate(daily.get("time") or []):
+        def at(name):
+            values = daily.get(name) or []
+            return values[i] if i < len(values) else None
 
-    return _seed_forecast(destination)
+        rain_mm = float(at("precipitation_sum") or 0)
+        chance = at("precipitation_probability_max")
+        rows.append(
+            {
+                "date": day,
+                "tmin": at("temperature_2m_min"),
+                "tmax": at("temperature_2m_max"),
+                "rain_mm": round(rain_mm, 1),
+                "rain_chance": None if chance is None else int(chance),
+                "condition": _CONDITIONS.get(int(at("weather_code") or 0), "Unknown"),
+                "rainy": _is_rainy(rain_mm, None if chance is None else float(chance)),
+            }
+        )
+    _cache[key] = rows
+    return rows
+
+
+def _same_day_last_year(d: date) -> date:
+    try:
+        return d.replace(year=d.year - 1)
+    except ValueError:  # 29 Feb
+        return d.replace(year=d.year - 1, day=28)
+
+
+def trip_weather(place: str, start_date: str, days: int = 1) -> dict:
+    """Weather for each trip day. Days within the forecast window get the forecast; later days get the
+    same calendar day last year, marked as such. Never raises: a failure returns source "unavailable"."""
+    from tools.mapbox_api import geocode_location
+
+    try:
+        start = date.fromisoformat(start_date) if start_date else date.today()
+        geo = geocode_location.invoke({"place_name": place})
+        if geo["lat"] is None:
+            raise ValueError("unknown place")
+        horizon = date.today() + timedelta(days=FORECAST_HORIZON_DAYS)
+        trip_days = [start + timedelta(days=i) for i in range(max(1, days))]
+        near, far = [d for d in trip_days if d <= horizon], [d for d in trip_days if d > horizon]
+        rows: list[dict] = []
+        if near:
+            rows += [{**r, "source": "forecast"} for r in _fetch(geo["lat"], geo["lng"], near[0], near[-1], False)]
+        if far:
+            past = _fetch(geo["lat"], geo["lng"], _same_day_last_year(far[0]), _same_day_last_year(far[-1]), True)
+            rows += [{**r, "date": d.isoformat(), "source": "last year"} for r, d in zip(past, far)]
+    except Exception:  # noqa: BLE001 — weather is advice, never a reason to fail a plan
+        return {"source": "unavailable", "days": [], "rainy_dates": [], "summary": "Weather unavailable"}
+
+    rainy = [r["date"] for r in rows if r["rainy"]]
+    temps = [(r["tmin"], r["tmax"]) for r in rows if r["tmin"] is not None and r["tmax"] is not None]
+    sources = {r["source"] for r in rows}
+    overall = "mixed" if len(sources) > 1 else (sources.pop() if sources else "unavailable")
+    bits = []
+    if temps:
+        bits.append(f"{min(t[0] for t in temps):.0f}–{max(t[1] for t in temps):.0f}°C")
+    bits.append(f"rain likely on {len(rainy)} of {len(rows)} days" if rainy else "mostly dry")
+    if overall != "forecast":
+        bits.append("typical for these dates (last year)")
+    return {"source": overall, "days": rows, "rainy_dates": rainy, "summary": ", ".join(bits)}
 
 
 @tool(parse_docstring=True)
-def check_weather_disruptions(destinations: list[str]) -> dict:
-    """Cross-reference OpenWeatherMap rain risk against itinerary destinations.
-
-    Live rain_risk is reported; the offline default is informational only
-    so missing OpenWeather keys do not force a replan.
+def check_weather_disruptions(destinations: list[str], start_date: str = "", days: int = 1) -> dict:
+    """Which of these places have rain or a storm on the trip dates.
 
     Args:
-        destinations: Destination names appearing in the itinerary.
+        destinations: Place names to check.
+        start_date: First day, YYYY-MM-DD. Defaults to today.
+        days: Number of days.
 
     Returns:
-        dict with issues (list of {destination, message, source, live}).
+        dict with issues (list of {destination, message, source}).
     """
-    issues: list[dict] = []
-    for dest in destinations:
-        forecast = get_weather_forecast.invoke({"destination": dest, "day_offset": 0})
-        if forecast.get("rain_risk"):
-            issues.append(
-                {
-                    "destination": dest,
-                    "message": forecast.get("summary", "rain risk"),
-                    "source": forecast.get("source"),
-                    "live": forecast.get("source") == "openweathermap",
-                }
-            )
+    issues = []
+    for place in destinations:
+        weather = trip_weather(place, start_date, days)
+        stormy = [r["date"] for r in weather["days"] if "thunder" in r["condition"].lower()]
+        if weather["rainy_dates"] or stormy:
+            issues.append({"destination": place, "message": weather["summary"] + (f"; storms on {', '.join(stormy)}" if stormy else ""), "source": weather["source"]})
     return {"issues": issues}

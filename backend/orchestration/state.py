@@ -10,10 +10,13 @@ from models.schemas import (
     Destination,
     Activity,
     Disruption,
+    EditDirective,
+    EditLocks,
     Hotel,
     Itinerary,
     ReplanDirective,
     Route,
+    StayBlock,
     TripSpec,
     ValidationReport,
 )
@@ -36,6 +39,7 @@ class TripState(TypedDict, total=False):
     budget_breakdown: Optional[BudgetBreakdown]
     accommodation_options: list[Hotel]
     excluded_activity_ids: list[str]
+    stay_plan: list[StayBlock]
 
     # --- Schedule (Itinerary Architect) --------------------------------
     draft_itinerary: Optional[Itinerary]
@@ -50,8 +54,18 @@ class TripState(TypedDict, total=False):
     # --- Live / disruption events ---------------------------------------
     disruptions: list[Disruption]
 
+    # --- Prompt-based editing (Edit Router) -------------------------------
+    edit_request: Optional[str]  # a pending user edit; consumed by edit_router
+    edit_directive: Optional[EditDirective]
+    edit_locks: EditLocks  # standing instructions every specialist honours
+    assistant_reply: Optional[str]  # answer-only turns
+
     # --- Streaming log (accumulates across the whole run) ---------------
     agent_messages: Annotated[list[str], operator.add]
+
+    # How the agent that just ran reached its answer: which tools the model called, which engine
+    # answered, which algorithms the code ran. The UI shows this; it is evidence, not plan data.
+    agent_meta: dict
 
     # --- Score -------------------------------------------------------
     optimization_score: float
@@ -68,6 +82,7 @@ def initial_state(raw_input: str) -> TripState:
         budget_breakdown=None,
         accommodation_options=[],
         excluded_activity_ids=[],
+        stay_plan=[],
         draft_itinerary=None,
         final_itinerary=None,
         validation_report=None,
@@ -75,6 +90,11 @@ def initial_state(raw_input: str) -> TripState:
         iteration_count=0,
         conflicts=[],
         disruptions=[],
+        edit_request=None,
+        edit_directive=None,
+        edit_locks=EditLocks(),
+        assistant_reply=None,
         agent_messages=[],
+        agent_meta={},
         optimization_score=0.0,
     )

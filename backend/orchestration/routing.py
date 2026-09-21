@@ -27,3 +27,29 @@ def route_after_critic(state: TripState) -> str:
         return "valid"
 
     return _TARGET_TO_EDGE.get(directives[0].target_agent, "rebuild_schedule")
+
+
+_EDIT_ENTRY_TO_EDGE = {
+    "destination_agent": "replan_destination",
+    "mobility_agent": "replan_mobility",
+    "budget_agent": "replan_budget",
+    "itinerary_architect": "rebuild_schedule",
+    "critic_replanner": "revalidate",
+}
+
+
+def route_entry(state: TripState) -> str:
+    """A run starts at the Trip Analyst (new plan) or the Edit Router (a user edit)."""
+    return "revise" if state.get("edit_request") else "plan"
+
+
+def route_after_edit(state: TripState) -> str:
+    directive = state.get("edit_directive")
+    if directive is None or directive.intent == "answer":
+        return "answer"
+    return _EDIT_ENTRY_TO_EDGE.get(directive.entry, "answer")
+
+
+def route_after_analyst(state: TripState) -> str:
+    spec = state.get("trip_spec")
+    return "ask" if spec is None or not spec.destination_region else "go"

@@ -20,4 +20,5 @@ export const stepAccent: Record<string, string> = {
   budget_agent: palette.copper,
   itinerary_architect: palette.sea,
   critic_replanner: palette.sage,
+  edit_router: palette.copper,
 };

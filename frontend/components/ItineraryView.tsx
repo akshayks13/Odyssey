@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Hotel, Itinerary } from "@/lib/types";
+import { Bed, Bus, Car, Coffee, CloudRain, Plane, Sun, TrainFront, Utensils } from "lucide-react";
+import { Hotel, Itinerary, ItineraryDay, RouteLeg } from "@/lib/types";
+import { cn } from "@/lib/cn";
 
 function formatHour(h: number): string {
   const hours = Math.floor(h);
@@ -11,20 +13,50 @@ function formatHour(h: number): string {
   return `${displayHour}:${minutes.toString().padStart(2, "0")} ${period}`;
 }
 
-export function ItineraryView({
-  itinerary,
-  hotels = [],
-}: {
-  itinerary: Itinerary;
-  hotels?: Hotel[];
-}) {
+function formatDate(iso?: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
+}
+
+const KIND_LABEL: Record<string, string> = { travel: "Travel day", leisure: "Free time" };
+
+function LegIcon({ leg }: { leg: RouteLeg }) {
+  const className = "h-3.5 w-3.5";
+  if (leg.mode === "air") return <Plane className={className} />;
+  if (leg.mode === "rail") return <TrainFront className={className} />;
+  return leg.vehicle === "bus" ? <Bus className={className} /> : <Car className={className} />;
+}
+
+function LegBlock({ leg, label }: { leg: RouteLeg; label: string }) {
+  return (
+    <div className="bg-wash px-5 py-3">
+      <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+        <LegIcon leg={leg} />
+        {label}
+      </p>
+      <p className="mt-1 text-sm font-medium text-ink">
+        {leg.summary || `${leg.origin} → ${leg.destination} · ${leg.mode}`}
+      </p>
+      <p className="mt-0.5 text-xs text-muted">
+        {leg.mode}
+        {leg.airline ? ` · ${leg.airline}` : ""}
+        {` · ${leg.duration_hours.toFixed(1)}h · ₹${leg.cost_inr.toLocaleString("en-IN")}`}
+        {leg.mode === "road" && leg.source && leg.source !== "mapbox" ? " · estimated" : ""}
+      </p>
+    </div>
+  );
+}
+
+export function ItineraryView({ itinerary, hotels = [] }: { itinerary: Itinerary; hotels?: Hotel[] }) {
   const [openDay, setOpenDay] = useState<number | null>(itinerary.days[0]?.day_number ?? null);
   const lastDay = itinerary.days[itinerary.days.length - 1]?.day_number;
 
-  function overnightFor(dayNumber: number, destination: string, attached?: Hotel | null): Hotel | null {
-    if (attached) return attached;
-    if (dayNumber === lastDay) return null;
-    return hotels.find((hotel) => hotel.destination === destination) || hotels[0] || null;
+  function overnightFor(day: ItineraryDay): Hotel | null {
+    if (day.overnight_hotel) return day.overnight_hotel;
+    if (day.day_number === lastDay) return null;
+    return hotels.find((hotel) => hotel.destination === day.destination) || null;
   }
 
   return (
@@ -44,65 +76,84 @@ export function ItineraryView({
 
       {itinerary.days.map((day) => {
         const isOpen = openDay === day.day_number;
-        const overnight = overnightFor(day.day_number, day.destination, day.overnight_hotel);
+        const overnight = overnightFor(day);
+        const date = formatDate(day.date);
+        const kindLabel = day.kind ? KIND_LABEL[day.kind] : undefined;
         return (
           <div key={day.day_number} className="overflow-hidden rounded-3xl border border-line bg-white">
             <button
               onClick={() => setOpenDay(isOpen ? null : day.day_number)}
-              className="flex w-full items-center justify-between bg-white px-5 py-4 text-left hover:bg-grey-50"
+              className="flex w-full items-center justify-between gap-3 bg-white px-5 py-4 text-left hover:bg-grey-50"
             >
-              <div>
+              <div className="min-w-0">
                 <span className="font-semibold text-ink">Day {day.day_number}</span>
+                {date && <span className="ml-2 text-sm text-muted">{date}</span>}
                 <span className="ml-2 text-muted">— {day.destination}</span>
-    {day.travel_leg && (
-                  <span className="ml-2 text-xs text-grey-500">
-                    ({day.travel_leg.mode}
-                    {day.travel_leg.origin_iata ? ` ${day.travel_leg.origin_iata}→${day.travel_leg.destination_iata}` : ""}
-                    , {day.travel_leg.duration_hours.toFixed(1)}h, ₹
-                    {day.travel_leg.cost_inr.toLocaleString("en-IN")})
+                {day.weather && (
+                  <span
+                    title={day.weather.source === "forecast" ? "Forecast" : "Typical for these dates (last year)"}
+                    className={cn(
+                      "ml-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+                      day.weather.rainy ? "bg-[#e6eef2] text-[#2f5d75]" : "bg-wash text-muted"
+                    )}
+                  >
+                    {day.weather.rainy ? <CloudRain className="h-3 w-3" /> : <Sun className="h-3 w-3" />}
+                    {day.weather.rainy && day.weather.rain_chance != null ? `Rain ${day.weather.rain_chance}%` : day.weather.summary}
                   </span>
+                )}
+                {kindLabel && (
+                  <span className="ml-2 rounded-full bg-wash px-2 py-0.5 text-xs font-medium text-muted">{kindLabel}</span>
                 )}
               </div>
               <span className="text-muted">{isOpen ? "−" : "+"}</span>
             </button>
             {isOpen && (
               <div className="divide-y divide-grey-100 border-t border-line">
-                {day.travel_leg && (
-                  <div className="bg-wash px-5 py-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">
-                      {day.day_number === 1 ? "Arrival" : "Travel"}
-                    </p>
-                    <p className="mt-1 text-sm font-medium text-ink">
-                      {day.travel_leg.summary ||
-                        `${day.travel_leg.origin} → ${day.travel_leg.destination} · ${day.travel_leg.mode}`}
-                    </p>
-                    <p className="mt-0.5 text-xs text-muted">
-                      {day.travel_leg.mode}
-                      {day.travel_leg.origin_iata && day.travel_leg.destination_iata
-                        ? ` · ${day.travel_leg.origin_iata}–${day.travel_leg.destination_iata}`
-                        : ""}
-                      {day.travel_leg.airline ? ` · ${day.travel_leg.airline}` : ""}
-                      {` · ${day.travel_leg.duration_hours.toFixed(1)}h · ₹${day.travel_leg.cost_inr.toLocaleString("en-IN")}`}
-                    </p>
-                  </div>
+                {day.travel_leg && <LegBlock leg={day.travel_leg} label={day.day_number === 1 ? "Arrival" : "Travel"} />}
+                {day.note && !day.travel_leg && (
+                  <p className="bg-wash px-5 py-3 text-sm text-muted">{day.note}</p>
                 )}
                 {day.items.length === 0 && (
-                  <p className="px-5 py-3 text-sm text-muted">Free day / rest day.</p>
+                  <p className="px-5 py-3 text-sm text-muted">
+                    {day.kind === "travel" ? "Most of today is spent getting there." : "Free day — no set plans."}
+                  </p>
                 )}
-                {day.items.map((item) => (
-                  <div key={item.activity_id} className="flex items-center gap-4 px-5 py-3">
-                    <span className="w-32 shrink-0 text-sm font-medium text-muted">
-                      {formatHour(item.start_hour)} – {formatHour(item.end_hour)}
-                    </span>
-                    <span className="flex-1 text-ink">{item.activity_name}</span>
-                    <span className="rounded-full bg-selected px-2 py-0.5 text-xs text-brand-primary">
-                      {item.category}
-                    </span>
-                  </div>
-                ))}
+                {day.items.map((item, i) => {
+                  const isMeal = item.kind === "meal";
+                  return (
+                    <div key={`${item.activity_id}-${i}`} className={cn("flex items-center gap-4 px-5 py-3", isMeal && "bg-paper/60")}>
+                      <span className="w-32 shrink-0 text-sm font-medium text-muted">
+                        {formatHour(item.start_hour)} – {formatHour(item.end_hour)}
+                      </span>
+                      <span className={cn("flex flex-1 items-center gap-2", isMeal ? "text-muted" : "text-ink")}>
+                        {isMeal &&
+                          (item.activity_name === "Dinner" ? (
+                            <Utensils className="h-4 w-4" />
+                          ) : (
+                            <Coffee className="h-4 w-4" />
+                          ))}
+                        {item.activity_name}
+                      </span>
+                      {!isMeal && (
+                        <>
+                          {!!item.cost_inr && (
+                            <span className="text-xs text-muted">₹{item.cost_inr.toLocaleString("en-IN")} pp</span>
+                          )}
+                          <span className="rounded-full bg-selected px-2 py-0.5 text-xs text-brand-primary">
+                            {item.category}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                {day.departure_leg && <LegBlock leg={day.departure_leg} label="Heading home" />}
                 {overnight && (
                   <div className="bg-wash px-5 py-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">Overnight stay</p>
+                    <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                      <Bed className="h-3.5 w-3.5" />
+                      Overnight stay
+                    </p>
                     <p className="mt-1 text-sm font-medium text-ink">{overnight.name}</p>
                     <p className="mt-0.5 text-xs text-muted">
                       {overnight.destination}

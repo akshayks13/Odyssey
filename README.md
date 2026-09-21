@@ -1,6 +1,6 @@
 # Odyssey — Multi-Agent Adaptive Travel Planning System
 
-Odyssey turns a natural-language trip request into a constraint-aware itinerary using **six specialized LangGraph agents** that share a single `TripState`. When weather, closures, transport, or budget change, the Critic routes a **targeted replan** to only the affected agent instead of regenerating the whole trip.
+Odyssey turns a natural-language trip request into a constraint-aware itinerary using **six specialized LangGraph agents** that share a single `TripState`. When weather, closures, transport, or budget change, the Critic routes a **targeted replan** to only the affected agent instead of regenerating the whole trip. After a plan exists you can also change it by typing ("make day 2 lighter", "add Alleppey"): an **Edit Router** reads the request and re-runs only the agents it touches.
 
 The locked design is in [`PLAN.md`](PLAN.md). This README is how to run it.
 
@@ -21,33 +21,36 @@ User
 
 ## What each agent does
 
-Every specialist is a LangGraph node. When `GEMINI_API_KEY` or `GROQ_API_KEY` is set, that node runs the same ReAct loop (`llm.bind_tools` → tool calls → JSON decision, up to 6 rounds). The model **chooses**; deterministic tools and algorithms **compute**. With no LLM key (or `ODYSSEY_DISABLE_LLM=1` in tests), the same tools still run on a heuristic path so tests stay offline.
+Every specialist is a LangGraph node. When `GEMINI_API_KEY` or `GROQ_API_KEY` is set, that node runs the same ReAct loop (`llm.bind_tools` → tool calls → JSON decision, a few rounds, then the final answer). The model **chooses**; deterministic tools and algorithms **compute**. Without a model there is no guessed plan: it stops with a clear message (see "When no model is available").
 
 Full role / decides / computes / tools cards (kept in sync with the code) are in [`PLAN.md`](PLAN.md#the-6-agents). Each agent file also starts with that contract.
 
 | # | Agent | Role | Decides (LLM) | Must not | Tools bound | Computes |
 |---|---|---|---|---|---|---|
-| 1 | **Trip Analyst** | Parser | Region, origin (arrival only), days, budget, prefs | Pick sights, hotels, or a day plan | `geocode_location`, `validate_trip_schema` | Regex heuristic if no LLM |
-| 2 | **Destination Discovery** | Explorer | Which cities to keep (not origin, not disrupted) | Order the route or book hotels | `search_destinations`, `search_attractions`, `get_weather_forecast`, `score_preference_match`, `get_place_photos` | Cosine score; attractions per city |
-| 3 | **Mobility & Routing** | Mover | Start city + hop mode label | Add cities or invent order | `quote_transport`, `search_flights`, `check_transport_availability`, `calculate_route_cost` | Mapbox road graph + weighted A* |
-| 4 | **Budget Optimization** | Money | Hotel tier, cheapest vs rated, activity cuts | Reorder cities or invent rupee totals | `search_hotels`, `search_hotel_offers`, `estimate_food_costs`, `validate_budget`, `generate_tradeoff_options` | Line items vs ceiling |
-| 5 | **Itinerary Architect** | Scheduler | Pace (relaxed / moderate / packed) | Reorder cities or pick hotels | `get_opening_hours`, `travel_time_matrix`, `validate_time_windows` | OR-Tools VRPTW + score |
-| 6 | **Critic & Replanner** | Coordinator | Which one specialist to re-invoke | Restart Analyst or rewrite days | `validate_budget`, `check_schedule_conflicts`, `check_transport_disruptions`, `check_attraction_availability`, `check_weather_disruptions` | Severity sort + graph edges |
+| 1 | **Trip Analyst** | Parser | Region, origin (arrival only), days, budget, prefs | Pick sights, hotels, or a day plan | `geocode_location`, `validate_trip_schema` | Validates the reply; stops with a clear error if no model is available |
+| 2 | **Destination Discovery** | Explorer | Which cities to keep (not origin, not disrupted) | Order the route or book hotels | `search_attractions`, `get_directions` | Places (LLM), weather for the trip dates, cosine score |
+| 3 | **Mobility & Routing** | Mover | Road / rail / air for every hop, including there and home (never a drive over the daily limit unless asked), and the road vehicle: own car, taxi, tempo traveller or bus | Add cities or invent order | `search_public_transport`, `check_transport_disruptions` | Road-time graph (Mapbox, else OSRM) + weighted A* |
+| 4 | **Budget Optimization** | Money | Hotel tier, activity cuts | Reorder cities or invent rupee totals | `search_hotels`, `estimate_food_costs` | Line items vs ceiling |
+| 5 | **Itinerary Architect** | Scheduler | Nothing by model: pace comes from the Analyst | Reorder cities or pick hotels | none | OR-Tools VRPTW, weather per day, score |
+| 6 | **Critic & Replanner** | Coordinator | Which one specialist to re-invoke | Restart Analyst or rewrite days | `check_weather_disruptions`, `check_transport_disruptions` | Severity sort + graph edges |
 
-**24 tool bindings** across the six agents (`validate_budget` is shared by Budget and Critic). Graph order is sequential: Analyst → Destination → Mobility → Budget → Architect → Critic.
+| ⤷ | **Edit Router** | Front door for changes | What changed, question vs change, which agent to re-run | Rewrite the plan itself | `get_plan_day`, `find_in_plan`, `list_alternative_cities`, `geocode_location` | Name checks; never re-enters after the earliest agent whose inputs changed |
 
-## LLM reasoning vs tools vs seed data
+Graph order for a new plan is sequential: Analyst → Destination → Mobility → Budget → Architect → Critic. The Critic can't handle "make day 2 lighter" because nothing is wrong to detect, which is why edits have their own agent. Everything it learns is stored as standing instructions (`EditLocks`) that every agent reads, so later replans keep the edit.
 
-This is **not** a mock-only pipeline when keys are present:
+## LLM reasoning vs tools
 
 | Layer | What it does |
 |---|---|
-| **LLM (Gemini Flash-Lite, Groq fallback)** | ReAct tool-calling. Decides *what* to search, *which* cities/hotels to keep, *start city*, *pace*, *which agent to re-invoke*. |
+| **LLM (Gemini, then Groq)** | ReAct tool-calling. Decides *which* cities/hotels to keep, *how to travel each hop*, *which agent to re-invoke*, and how to read an edit. Also supplies places for any region, sights with entry fees, hotels, flight/train quotes, food prices. |
 | **Deterministic tools** | A*, OR-Tools VRPTW, cost/budget arithmetic, preference cosine, validators. The model cannot invent rupee totals. |
-| **Live APIs** | Mapbox, Foursquare, OpenWeatherMap, Gemini (hotels/flights + agent tool-calling) — used first when keys exist. |
-| **`kerala_seed.json`** | Offline rows for cities in that file when a live lookup has nothing for them. |
+| **Live APIs** | Mapbox (geocoding and drive times, first choice), Open-Meteo (weather: the forecast up to 16 days ahead, otherwise the same dates last year; free, no key), Nominatim (the one geocoding fallback), OSRM (the one drive-time fallback: OpenStreetMap roads, free, no key; times are multiplied by 1.4 because it assumes free-flowing traffic and the leg is marked "estimated"). The map in the browser is MapLibre on OpenStreetMap tiles: no key. Times between sights within a day are straight-line at city speed. Foursquare is kept but not used as a source of sights. |
 
-Without `GEMINI_API_KEY` / `GROQ_API_KEY`, agents fall back to heuristics + seed so tests and offline demos work. With a key, each specialist runs `bind_tools` and the timeline messages say `via gemini:… tool-calling`. `/api/health` reports `"llm": null` when no key is loaded.
+Gemini is tried first; on a rate limit the call goes to the next key, and Groq is the last resort. `GEMINI_API_KEY` can hold several comma-separated keys, and each key from a separate Google project has its own quota, so more keys mean more plans per day and less waiting. All can call tools. Reading your request and editing a plan need a model; if none is available (a rate limit) it says so instead of guessing. There is no seed data. With a key, each specialist runs `bind_tools` and the timeline messages say `via gemini:… tool-calling`. `/api/health` reports the model in use, or `"unavailable"`.
+
+### When no model is available
+
+The free tiers run out (Gemini per minute and per day for each key, Groq within a couple of plans). Planning then stops with "The language model is unavailable…" instead of a made-up plan, and an edit says the plan is unchanged. For a demo, **See a sample trip** (landing page, and on that error) opens `backend/sample_trip.json`, a saved plan (the Kerala test data with real drive times and weather), through `POST /api/sample`. It needs no model, and can be edited once one is available again.
 
 ## LangSmith
 
@@ -61,7 +64,7 @@ Latest live pipeline run (public): [odyssey:live-full-pipeline](https://smith.la
 
 - Python 3.11+ (tested on 3.13)
 - Node.js 18+ (tested on 22)
-- Optional API keys (Gemini / Groq, Mapbox, Foursquare, OpenWeatherMap, LangSmith)
+- API keys: Groq and/or Gemini (at least one, required for planning; several Gemini keys can be comma-separated). Mapbox and LangSmith are optional. Weather and the map need no key.
 
 ## Local run
 
@@ -72,7 +75,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env               # fill keys if you have them; leave blank to use seed data
+cp .env.example .env               # fill keys if you have them; at least one of GROQ_API_KEY / GEMINI_API_KEY is needed to plan
 uvicorn api.main:app --reload --port 8000
 ```
 
@@ -85,7 +88,7 @@ API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 ```bash
 cd frontend
 npm install
-cp .env.local.example .env.local   # set NEXT_PUBLIC_MAPBOX_TOKEN for the interactive map
+cp .env.local.example .env.local   # only the API address; the map needs no key
 npm run dev
 ```
 
@@ -99,7 +102,7 @@ source .venv/bin/activate
 pytest -q
 ```
 
-Covers A*, CSP scheduling, preference/budget scorers, each agent, and three full scenarios (normal plan, closure replan, budget-cut replan).
+Runs offline in about 3 minutes (no keys, no network): a small Kerala data set stands in for the model and geocoder, so the real code paths run. Covers A*, the scheduler, the tools, the provider chain, each agent, the Edit Router, plan consistency and the full scenarios.
 
 ## Demo script (reviews)
 
@@ -113,7 +116,15 @@ Watch the six agents stream live, then inspect the day accordion, budget chart, 
 
 **Part B — live disruption**
 
-Click **Close Munnar** (or Weather / Transport / Cut Budget). The Critic flags the issue and re-invokes only the responsible agent. Example: a Munnar closure swaps Day 2 to Vagamon/Wayanad without restarting Trip Analyst.
+Click **Close <city>** (or Weather / Transport / Cut Budget). The Critic flags the issue and re-invokes only the responsible agent: closing a city replans with another nearby one, without restarting the Trip Analyst. This also works on a plan reopened after a server restart.
+
+**Part C — change it with a sentence**
+
+Type "make day 2 lighter" or "add Alleppey" in the **Change anything** box. The Edit Router decides which agent to re-run, and the timeline shows the agents that were kept unchanged.
+
+**If the model is rate-limited during a demo**
+
+The app says so instead of guessing. Click **See a sample trip** (landing page, or the link in the error box) to open a saved plan that needs no model.
 
 ## API
 
@@ -121,6 +132,8 @@ Click **Close Munnar** (or Weather / Transport / Cut Budget). The Critic flags t
 |---|---|---|
 | `POST` | `/api/plan` | Start a planning session, returns `{thread_id}` |
 | `GET` | `/api/plan/{thread_id}/stream` | SSE stream (`astream` messages/updates/custom) |
+| `POST` | `/api/sample` | Open the saved sample trip as a new thread (needs no model), returns `{thread_id}` |
+| `POST` | `/api/revise` | Change the plan with a sentence (`{thread_id, message}`); then reconnect to the stream |
 | `POST` | `/api/disrupt` | Inject a disruption; then reconnect to the stream |
 | `GET` | `/api/itinerary/{thread_id}` | Fetch current itinerary (checkpoint or SQLite) |
 | `GET` | `/api/health` | Readiness |
@@ -142,9 +155,9 @@ Weights are personalized by traveller archetype (`adventure` / `relaxed` / `budg
 ```
 backend/                 FastAPI + LangGraph agents, tools, algorithms
 frontend/                Next.js 14 App Router + Tailwind
-data/kerala_seed.json    Offline city/activity/hotel rows for cities in that file
+backend/sample_trip.json A saved plan for the demo (no model needed)
 ```
 
 ## Environment variables
 
-See `backend/.env.example` and `frontend/.env.local.example`. Keys are optional; bundled seed rows cover cities present in that file.
+See `backend/.env.example` and `frontend/.env.local.example`. Keys are optional. `GEMINI_MODEL` is the primary model; `GROQ_MODEL` is the last-resort fallback.
