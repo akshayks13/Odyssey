@@ -33,8 +33,7 @@ Full role / decides / computes / tools cards (kept in sync with the code) are in
 | 4 | **Budget Optimization** | Money | Hotel tier, activity cuts | Reorder cities or invent rupee totals | `search_hotels`, `estimate_food_costs` | Line items vs ceiling |
 | 5 | **Itinerary Architect** | Scheduler | Nothing by model: pace comes from the Analyst | Reorder cities or pick hotels | none | OR-Tools VRPTW, weather per day, score |
 | 6 | **Critic & Replanner** | Coordinator | Which one specialist to re-invoke | Restart Analyst or rewrite days | `check_weather_disruptions`, `check_transport_disruptions` | Severity sort + graph edges |
-
-| ⤷ | **Edit Router** | Front door for changes | What changed, question vs change, which agent to re-run | Rewrite the plan itself | `get_plan_day`, `find_in_plan`, `list_alternative_cities`, `geocode_location` | Name checks; never re-enters after the earliest agent whose inputs changed |
+| 7 | **Edit Router** | Front door for changes | What changed, question vs change, which agent to re-run | Rewrite the plan itself | `get_plan_day`, `find_in_plan`, `list_alternative_cities`, `geocode_location` | Name checks; never re-enters after the earliest agent whose inputs changed |
 
 Graph order for a new plan is sequential: Analyst → Destination → Mobility → Budget → Architect → Critic. The Critic can't handle "make day 2 lighter" because nothing is wrong to detect, which is why edits have their own agent. Everything it learns is stored as standing instructions (`EditLocks`) that every agent reads, so later replans keep the edit.
 
