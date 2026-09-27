@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncGenerator
 
 from models.schemas import BudgetBreakdown, Itinerary, Route, ValidationReport
-from services.itinerary_service import save_itinerary, save_state
+from services.itinerary_service import save_plan
+
+logger = logging.getLogger("odyssey.sse")
 
 _STREAM_MODES = ["messages", "updates", "custom"]
 _KNOWN_AGENTS = {
@@ -199,9 +202,17 @@ async def stream_graph_run(graph: Any, thread_id: str, input_state: dict | None,
 
         final_values = graph.get_state(config).values
         done_payload = serialize_final_state(final_values)
-        save_itinerary(thread_id, done_payload)
         if done_payload["itinerary"] is not None:  # a question or a clarifying ask leaves the stored plan as it was
-            save_state(thread_id, final_values)
+            save_plan(thread_id, done_payload, final_values)
         yield sse_event({"type": "done", **done_payload})
     except Exception as exc:  # noqa: BLE001 — surface any failure to the client as an SSE error event
-        yield sse_event({"type": "error", "message": str(exc)})
+        logger.exception("run failed for thread %s", thread_id)
+        try:  # best-effort: keep whatever the last completed node produced, so a reload isn't a dead end
+            partial_values = graph.get_state(config).values
+            if partial_values:
+                partial_payload = serialize_final_state(partial_values)
+                if partial_payload["itinerary"] is not None:
+                    save_plan(thread_id, partial_payload, partial_values)
+        except Exception:  # noqa: BLE001 — never let recovery itself hide the original error
+            logger.exception("failed to persist partial state for thread %s", thread_id)
+        yield sse_event({"type": "error", "message": str(exc), "thread_id": thread_id})

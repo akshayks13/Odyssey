@@ -200,9 +200,9 @@ def _directive_from_json(data: dict) -> EditDirective | None:
         preferred_mode=raw.get("preferred_mode") if raw.get("preferred_mode") in {"road", "rail", "air"} else None,
         hotel_prefs={str(k).lower(): str(v) for k, v in (raw.get("hotel_prefs") or {}).items() if v},
         excluded_activities=[str(x) for x in raw.get("excluded_activities") or [] if x],
-        pinned_activities={str(k): int(v) for k, v in (raw.get("pinned_activities") or {}).items() if _num(v) is not None},
-        free_days=[int(x) for x in raw.get("free_days") or [] if _num(x) is not None],
-        light_days=[int(x) for x in raw.get("light_days") or [] if _num(x) is not None],
+        pinned_activities={str(k): int(_num(v)) for k, v in (raw.get("pinned_activities") or {}).items() if _num(v) is not None},
+        free_days=[int(_num(x)) for x in raw.get("free_days") or [] if _num(x) is not None],
+        light_days=[int(_num(x)) for x in raw.get("light_days") or [] if _num(x) is not None],
         pace=raw.get("pace") if raw.get("pace") in PACE_CAPS else None,
         day_start_hour=_num(raw.get("day_start_hour")),
     )

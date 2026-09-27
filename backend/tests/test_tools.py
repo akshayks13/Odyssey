@@ -242,6 +242,29 @@ def test_trip_schema_validation():
     assert validate_trip_schema.invoke({"spec": {"duration_days": 0}})["valid"] is False
 
 
+def test_edit_router_directive_accepts_stringly_typed_numbers():
+    """A model that emits {"free_days": ["2"]} or a decimal string like "2.5" for a day number
+    used to crash with an uncaught ValueError (int("2.5") fails even though the field was
+    already confirmed numeric by _num). It must parse, not raise."""
+    from agents.edit_router import _directive_from_json
+
+    directive = _directive_from_json({
+        "intent": "modify",
+        "route_to": "itinerary_architect",
+        "lock_updates": {
+            "free_days": ["2", "3.0"],
+            "light_days": ["4.5"],
+            "pinned_activities": {"Museum": "1.0"},
+            "day_start_hour": "8.5",
+        },
+    })
+    assert directive is not None
+    assert directive.lock_updates.free_days == [2, 3]
+    assert directive.lock_updates.light_days == [4]
+    assert directive.lock_updates.pinned_activities == {"Museum": 1}
+    assert directive.lock_updates.day_start_hour == 8.5
+
+
 def test_edit_router_tools_read_the_plan(planning_state):
     from agents.destination_agent import destination_agent_node
     from agents.edit_router import _make_tools
@@ -376,6 +399,18 @@ def test_a_malformed_tool_call_is_retried_without_tools(providers):
     groq = FakeModel("groq", [Exception("400 tool_use_failed: Failed to call a function"), {"who": "groq-json"}])
     providers(groq, FakeModel("gemini", []))
     assert llm.llm_decide(object(), [validate_budget], "s", "u")["who"] == "groq-json"
+
+
+def test_an_unparseable_reply_fails_over_instead_of_being_accepted(providers):
+    """A reply that isn't valid JSON used to still be accepted, because tagging it with
+    `_tool_calls` made the otherwise-empty decision dict truthy. That silently defeated
+    failover: the next provider was never tried, and callers saw an empty decision as if
+    the model had genuinely answered "nothing". It must now fail over."""
+    groq = FakeModel("groq", ["not actually json"])  # -> parse_json_blob returns {}
+    gemini = FakeModel("gemini", [{"who": "gemini"}])
+    providers(groq, gemini)
+    assert llm.llm_decide(object(), [], "s", "u", max_rounds=1)["who"] == "gemini"
+    assert groq.calls == 1 and gemini.calls == 1
 
 
 def test_no_provider_configured(monkeypatch):

@@ -13,9 +13,9 @@ const COLORS: Record<string, string> = {
 
 export function BudgetChart({ budget }: { budget: BudgetBreakdown }) {
   const data = budget.line_items.map((item) => ({
-    name: item.category[0].toUpperCase() + item.category.slice(1),
+    name: item.category ? item.category[0].toUpperCase() + item.category.slice(1) : "Other",
     amount: item.amount_inr,
-    key: item.category,
+    key: item.category || "other",
   }));
 
   const overBudget = budget.total_inr > budget.ceiling_inr;

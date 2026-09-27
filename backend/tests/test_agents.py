@@ -425,6 +425,65 @@ def test_plan_and_stream_endpoints(use_scripted_analyst):
     assert '"type": "init"' in body and '"type": "done"' in body
 
 
+def test_a_clarifying_question_does_not_save_a_null_itinerary(use_scripted_analyst):
+    """`sse.py` used to call save_itinerary unconditionally, so a vague first message that only
+    produced a clarifying question would write itinerary: null for that thread_id — a landmine
+    for any later save race on the same id. It must only persist once there's a real plan."""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+    from services.itinerary_service import load_itinerary, load_state
+
+    client = TestClient(app)
+    thread_id = "http-ask-1"
+    client.post("/api/plan", json={"message": "plan something nice for me", "thread_id": thread_id})
+    with client.stream("GET", f"/api/plan/{thread_id}/stream") as res:
+        body = "".join(res.iter_text())
+    events = [json.loads(line[5:]) for line in body.split("\n\n") if line.startswith("data:")]
+    done = next(e for e in events if e["type"] == "done")
+    assert done["itinerary"] is None and done["reply"] == "Where would you like to go?"
+    assert load_itinerary(thread_id) is None, "a clarifying question must not persist a null itinerary"
+    assert load_state(thread_id) is None, "a clarifying question must not persist unusable editable state"
+
+
+def test_a_corrupt_saved_state_blob_is_treated_as_no_state_not_a_500():
+    """load_state ran the deserializer with no try/except, so a schema change or a truncated
+    blob turned /api/revise and /api/disrupt into unhandled 500s. It must degrade to "no saved
+    state" (a clean 404 at the route level), like a thread that was never saved at all."""
+    from sqlalchemy.orm import Session
+
+    from services.itinerary_service import SavedState, engine, load_state
+
+    thread_id = "corrupt-state-1"
+    with Session(engine) as session:
+        session.merge(SavedState(thread_id=thread_id, state_type="json", state_blob=b"not a valid serialized state"))
+        session.commit()
+    assert load_state(thread_id) is None
+
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+
+    client = TestClient(app)
+    res = client.post("/api/revise", json={"thread_id": thread_id, "message": "hi"})
+    assert res.status_code == 404
+
+
+def test_save_plan_writes_both_rows_in_one_transaction():
+    """save_itinerary and save_state used to be two separate commits; a crash or a --reload
+    restart between them left a thread with a good itinerary but no state row -- it renders
+    fine but every edit 404s with a misleading "unknown thread" (seen live on saved data)."""
+    from services.itinerary_service import load_itinerary, load_state, save_plan
+
+    thread_id = "atomic-save-1"
+    assert load_itinerary(thread_id) is None and load_state(thread_id) is None
+    save_plan(thread_id, {"itinerary": {"days": []}, "score": 0.5}, {"trip_spec": None})
+    assert load_itinerary(thread_id) is not None
+    assert load_state(thread_id) is not None
+
+
 def test_a_named_city_is_always_a_stop_even_if_the_model_picks_others(planning_state, monkeypatch):
     import agents.destination_agent as destination
 

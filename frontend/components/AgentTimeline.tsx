@@ -67,10 +67,14 @@ function Chips({ meta }: { meta?: AgentMeta }) {
 export function AgentTimeline({
   statuses,
   messages,
+  liveTool,
   finished = false,
 }: {
   statuses: Record<string, AgentStatus>;
   messages: { agent: string; message: string; meta?: AgentMeta }[];
+  /** The tool each running agent is calling right now, if any — real-time evidence of the
+   * multi-agent system actually doing something during a step, rather than a silent wait. */
+  liveTool?: Record<string, string | null>;
   finished?: boolean; // a saved plan opened without running: its steps are done
 }) {
   const lastFor = (agent: string) => [...messages].reverse().find((m) => m.agent === agent);
@@ -123,6 +127,12 @@ export function AgentTimeline({
                 </div>
                 {message && (
                   <p className="mt-1 text-sm leading-snug text-muted">{cleanMessage(message)}</p>
+                )}
+                {!message && status === "running" && liveTool?.[agent] && (
+                  <p className="mt-1 flex items-center gap-1.5 text-sm leading-snug text-muted">
+                    <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-brand-primary" aria-hidden />
+                    Calling <span className="font-mono text-[13px] text-brand-primary">{liveTool[agent]}</span>…
+                  </p>
                 )}
                 <Chips meta={entry?.meta} />
                 {entry?.meta?.note && (

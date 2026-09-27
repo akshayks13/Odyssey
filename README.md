@@ -129,8 +129,9 @@ The app says so instead of guessing. Click **See a sample trip** (landing page, 
 
 | Method | Path | Purpose |
 |---|---|---|
+| `GET` | `/` | Liveness (`{name, status, docs}`); interactive docs at `/docs` |
 | `POST` | `/api/plan` | Start a planning session, returns `{thread_id}` |
-| `GET` | `/api/plan/{thread_id}/stream` | SSE stream (`astream` messages/updates/custom) |
+| `GET` | `/api/plan/{thread_id}/stream` | SSE stream (`astream` messages/updates/custom). Also the reconnect path after a reload or a restart — resumes the in-memory checkpoint, or rehydrates from the saved state if that's empty |
 | `POST` | `/api/sample` | Open the saved sample trip as a new thread (needs no model), returns `{thread_id}` |
 | `POST` | `/api/revise` | Change the plan with a sentence (`{thread_id, message}`); then reconnect to the stream |
 | `POST` | `/api/disrupt` | Inject a disruption; then reconnect to the stream |
@@ -139,7 +140,7 @@ The app says so instead of guessing. Click **See a sample trip** (landing page, 
 
 The Next.js app proxies the SSE stream at `GET /api/stream?threadId=` via a `TransformStream`.
 
-SSE event types: `init`, `step_start`, `tool_result`, `step_complete`, `done`, `error`.
+SSE event types: `init`, `step_start`, `tool_result`, `step_complete`, `custom` (reserved — no node emits one yet), `done`, `error`.
 
 ## Optimization model
 

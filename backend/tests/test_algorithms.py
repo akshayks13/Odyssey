@@ -77,6 +77,24 @@ def test_astar_always_returns_a_plan_even_with_tiny_expansion_budget():
     assert result["algorithm"] in {"weighted_astar", "weighted_astar_anytime_fallback"}
 
 
+def test_astar_routes_around_an_unavailable_leg_instead_of_preferring_it():
+    """mapbox_api returns a 0.0h/₹0 leg when no road, flight or train was found ("unavailable").
+    That used to look like the cheapest, fastest edge in the graph, so A* would pick a route
+    straight through it instead of a real, working detour."""
+    table = {
+        ("Start", "X"): {"duration_hours": 0.0, "cost_inr": 0.0, "distance_km": 0.0, "mode": "road", "source": "unavailable"},
+        ("X", "Start"): {"duration_hours": 0.0, "cost_inr": 0.0, "distance_km": 0.0, "mode": "road", "source": "unavailable"},
+        ("Start", "Y"): {"duration_hours": 2.0, "cost_inr": 400, "distance_km": 80, "mode": "road", "source": "mapbox"},
+        ("Y", "Start"): {"duration_hours": 2.0, "cost_inr": 400, "distance_km": 80, "mode": "road", "source": "mapbox"},
+        ("Y", "X"): {"duration_hours": 2.0, "cost_inr": 400, "distance_km": 80, "mode": "road", "source": "mapbox"},
+        ("X", "Y"): {"duration_hours": 2.0, "cost_inr": 400, "distance_km": 80, "mode": "road", "source": "mapbox"},
+    }
+    graph = build_travel_graph(["Start", "X", "Y"], lambda o, d: table[(o, d)])
+    result = astar_route_search(graph, "Start", ["Start", "X", "Y"])
+    assert result["order"] == ["Start", "Y", "X"], "should detour via Y rather than take the unavailable Start->X hop"
+    assert result["total_time_hours"] < 900  # nowhere near the unavailable-leg sentinel
+
+
 def test_astar_respects_daily_travel_cap_parameter():
     cities = ["Kochi", "Munnar", "Thekkady", "Alleppey"]
     graph = build_travel_graph(cities, _get_leg)

@@ -77,16 +77,16 @@ flowchart TD
   - **Mapbox**: geocoding and road directions (first choice; its free account can be paused, so each has one fallback)
   - **OSRM** (OpenStreetMap roads, free, no key): the drive-time fallback when Mapbox has no answer; its free-flow times are multiplied by 1.4
   - **OpenStreetMap tiles + MapLibre**: the interactive map in the browser (no key)
-  - **Foursquare Places**: nearby POIs; LLM fills visitor sights when that list is empty or not useful
-  - **LLM market data**: places in a region, sights with entry fees, hotels, flight/train quotes, food prices
+  - **Foursquare Places**: integrated in `foursquare_api.py` as a ready swap-in for `search_attractions` — held back by design, since the LLM path already covers entry fees and opening hours in one call across any country, which Foursquare's POI categories alone don't give
+  - **LLM market data**: the primary source for sights (with entry fees and opening hours), hotels, flight/train quotes, and food prices — chosen over metered flight/hotel APIs (Amadeus, Duffel) after evaluating them, since it works for any region with no per-call cost or quota to manage during a demo
   - **Open-Meteo** (free, no key): a real forecast when the trip is within 16 days, otherwise the same dates last year as a seasonal guide, per day with rain chance
   - **Nominatim** (OpenStreetMap): free fallback geocoder when Mapbox has no answer
 - **Database**: SQLite for saved itineraries and the graph state behind them (so a plan can be edited after a restart)
-- **Cache**: None
+- **Cache**: in-process, per-tool, no TTL — one module-level dict each for geocode, directions, destinations, attractions, hotels, transport quotes and food cost; cleared between tests, not between server restarts
 - **No model**: planning stops with a clear message; a saved sample trip (`backend/sample_trip.json`) opens without one
-- **Frontend**: Next.js 14 App Router (nodejs runtime) + Tailwind + shadcn/ui + MapLibre GL JS (OpenStreetMap tiles)
+- **Frontend**: Next.js 14 App Router (nodejs runtime) + Tailwind (no component library) + MapLibre GL JS (OpenStreetMap tiles)
 - **Streaming**: Server-Sent Events — FastAPI `StreamingResponse` + LangGraph `astream(version="v2", stream_mode=[...])` → Next.js `TransformStream` route handler
-- **Deployment**: local run only (no Docker for v1)
+- **Deployment**: local run only
 
 ---
 
@@ -122,7 +122,7 @@ Graph order (locked): Analyst → Destination → Mobility → Budget → Archit
 - **Tools the model can call**: `search_attractions`, `get_directions`. The code itself uses:
   - `search_destinations` — the LLM lists places in the region (any country); nothing is invented if it cannot answer
   - `get_directions` — drive times, so the LLM can keep stops close together
-  - `search_attractions` — LLM visitor sights (with entry fees). Foursquare's nearby search is kept in `foursquare_api.py` but not used: it returns every kind of venue (schools, shops, clinics)
+  - `search_attractions` — LLM visitor sights, with entry fees and opening hours in the same call. Chosen over Foursquare's nearby search (`foursquare_api.py`, kept ready as a swap-in) because that returns every kind of venue — schools, shops, clinics — not just things worth visiting
   - weather (`trip_weather`, Open-Meteo) for each candidate, shown to the model so it can avoid a soaked stop
   - `score_preference_match` — cosine similarity
 - **Instruction**: "You are Odyssey's Destination Discovery agent — the explorer, not the scheduler."
@@ -254,7 +254,7 @@ class TripState(TypedDict):
 ### VRPTW Scheduling (`algorithms/csp_solver.py`)
 - Library: `ortools.constraint_solver.pywrapcp.RoutingModel` (Vehicle Routing with Time Windows)
 - Nodes = activities + hotels; edges = travel time between the day's stops (straight-line at city speed: the stops are a few km apart)
-- Time windows per node = attraction opening hours (fetched from Foursquare)
+- Time windows per node = attraction opening hours (from the LLM's `search_attractions`, not Foursquare — see the External APIs note above)
 - Service times = activity durations; vehicle capacity = daily hour budget
 - Soft constraints: meal windows (penalty for violations), rest blocks
 - Objective: Minimize travel time while maximizing preference-weighted activity score
@@ -270,17 +270,21 @@ class TripState(TypedDict):
 ## LangGraph Graph Topology
 
 ```python
-# orchestration/graph.py
+# orchestration/graph.py — 7 nodes: the 6 below plus edit_router (added for prompt edits).
+# START branches on whether this is a new plan or an edit (route_entry):
+#   "plan"   -> trip_analyst
+#   "revise" -> edit_router  (re-enters the pipeline at the shallowest agent the edit touches)
 graph = StateGraph(TripState)
 graph.add_node("trip_analyst", trip_analyst_node)
-graph.add_node("destination_agent", destination_node)
-graph.add_node("budget_agent", budget_node)
-graph.add_node("mobility_agent", mobility_node)
-graph.add_node("itinerary_architect", itinerary_node)
-graph.add_node("critic_replanner", critic_node)
+graph.add_node("destination_agent", destination_agent_node)
+graph.add_node("mobility_agent", mobility_agent_node)
+graph.add_node("budget_agent", budget_agent_node)
+graph.add_node("itinerary_architect", itinerary_architect_node)
+graph.add_node("critic_replanner", critic_replanner_node)
+graph.add_node("edit_router", edit_router_node)
 
-graph.set_entry_point("trip_analyst")
-graph.add_edge("trip_analyst", "destination_agent")
+graph.add_conditional_edges(START, route_entry, {"plan": "trip_analyst", "revise": "edit_router"})
+graph.add_conditional_edges("trip_analyst", route_after_analyst, {"go": "destination_agent", "ask": END})
 graph.add_edge("destination_agent", "mobility_agent")
 graph.add_edge("mobility_agent", "budget_agent")
 graph.add_edge("budget_agent", "itinerary_architect")
@@ -310,23 +314,25 @@ app = graph.compile(checkpointer=MemorySaver())
 
 ## API Layer (FastAPI)
 
-- `POST /api/plan` → starts LangGraph session, returns `thread_id`, begins streaming
-- `GET /api/plan/{thread_id}/stream` → SSE stream; uses `graph.astream(version="v2", stream_mode=["messages","updates","custom"], subgraphs=True)`
+- `POST /api/plan` → stashes the request in memory and returns `thread_id`; nothing runs until the client opens the stream below
+- `GET /api/plan/{thread_id}/stream` → SSE stream; uses `graph.astream(version="v2", stream_mode=["messages","updates","custom"], subgraphs=True)`. Also the reconnect path: with nothing pending, it resumes the in-memory checkpoint, or — after a restart — rehydrates from the saved state, same as `/api/disrupt` below
 - `POST /api/revise` → a free-text edit; the stream then starts at the Edit Router (from the stored state, so it works after a restart)
 - `POST /api/disrupt` → injects `Disruption` into live state via `graph.aupdate_state()` → triggers Critic replan
 - `GET /api/itinerary/{thread_id}` → fetch finalized itinerary from checkpoint
 - `GET /api/health` → readiness check
 
-SSE event types (typed stream):
+SSE event types (`api/sse.py`):
 ```json
-{"type": "step_start",   "agent": "destination_agent", "message": "Searching destinations..."}
-{"type": "tool_result",  "agent": "mobility_agent",    "tool": "astar_route_search", "data": {...}}
-{"type": "step_complete","agent": "itinerary_architect","data": {...draft_itinerary...}}
-{"type": "done",         "data": {...final_itinerary...}, "score": 0.87}
-{"type": "error",        "agent": "budget_agent",       "message": "hotel search timeout, retrying..."}
+{"type": "init",          "thread_id": "..."}
+{"type": "step_start",    "agent": "destination_agent", "message": "destination_agent started..."}
+{"type": "tool_result",   "agent": "destination_agent", "tool": "search_attractions", "data": {...args}}
+{"type": "step_complete", "agent": "itinerary_architect", "message": "...", "meta": {...}, "data": {...}}
+{"type": "custom", ...}    // reserved for a node-level progress event; no node emits one yet
+{"type": "done", "itinerary": {...}, "budget": {...}, "route": {...}, "score": 0.87, ...}
+{"type": "error",         "message": "...", "thread_id": "..."}
 ```
 
-Key FastAPI pattern: graph compiled **once at startup** via `lifespan`; `thread_id = user_id:session_id`; `X-Accel-Buffering: no` header for Nginx.
+Key FastAPI pattern: graph compiled **once at startup** via `lifespan`; `thread_id = uuid4()` (no user/session concept — a client may also supply its own on `POST /api/plan`); `X-Accel-Buffering: no` header for Nginx.
 
 ---
 
@@ -336,11 +342,13 @@ Key FastAPI pattern: graph compiled **once at startup** via `lifespan`; `thread_
 - `app/plan/[threadId]/page.tsx` — Live planning view with agent progress + map
 - `app/api/stream/route.ts` — Next.js Route Handler (`runtime = 'nodejs'`); proxies FastAPI SSE via `TransformStream`; forwards `req.signal` for clean disconnect
 - `lib/useAgentStream.ts` — Custom hook: reads SSE chunks, `startTransition` throttles React re-renders
-- `components/AgentTimeline.tsx` — Real-time SSE-driven agent status cards (running / done / error states)
+- `components/AgentTimeline.tsx` — Real-time SSE-driven agent status cards (running / done / error / kept states), live tool-call line, tool/algorithm/engine chips
 - `components/ItineraryView.tsx` — Day-by-day accordion schedule with time slots
 - `components/MapView.tsx` — **MapLibre GL JS** interactive map (OpenStreetMap tiles) with destination markers + route polyline
-- `components/DisruptionPanel.tsx` — weather, closure, and budget-cut controls
+- `components/DisruptionPanel.tsx` — weather, closure, transport, and budget-cut controls
 - `components/BudgetChart.tsx` — Cost breakdown bar chart (recharts)
+- `components/EditBox.tsx` — chat-style transcript + free-text change request box (prompt edits)
+- `components/Header.tsx` / `Footer.tsx` / `Wordmark.tsx` — site chrome
 
 ---
 

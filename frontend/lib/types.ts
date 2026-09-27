@@ -118,6 +118,7 @@ export interface ValidationIssue {
   severity: "low" | "medium" | "high";
   message: string;
   target_agent?: string | null;
+  avoid?: string[];
 }
 
 export type AgentStatus = "pending" | "running" | "done" | "error" | "kept";
@@ -148,11 +149,12 @@ export interface AgentStepEvent {
   itinerary?: Itinerary | null;
   budget?: BudgetBreakdown | null;
   route?: Route | null;
-  valid?: boolean;
+  valid?: boolean | null;
   issues?: ValidationIssue[];
   score?: number | null;
   iteration_count?: number;
   selected_destinations?: Destination[];
+  accommodation_options?: Hotel[];
   trip?: TripInfo | null;
   assumptions?: string[];
   reply?: string | null;

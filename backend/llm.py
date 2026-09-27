@@ -226,6 +226,8 @@ def _react_loop(llm, tools: list, system: str, user: str, max_rounds: int, json_
         if not tool_calls:
             text = (ai.content or "") if isinstance(ai.content, str) else str(ai.content or "")
             decision = parse_json_blob(text)
+            if not decision:  # an empty/unparseable reply is a failure, not an answer: let the caller fail over
+                return {}
             decision["_tool_calls"] = called
             return decision
         for call in tool_calls:
@@ -276,6 +278,8 @@ def _gemini_loop(gem: "_Gemini", tools: list, system: str, user: str, max_rounds
         calls = [p.function_call for p in (turn.parts or []) if p.function_call]
         if not calls:
             decision = parse_json_blob(resp.text or "")
+            if not decision:  # an empty/unparseable reply is a failure, not an answer: let the caller fail over
+                return {}
             decision["_tool_calls"] = called
             return decision
         contents.append(turn)
@@ -312,8 +316,12 @@ def llm_decide(llm, tools: list, system: str, user: str, max_rounds: int = 3) ->
         for name, model in _providers():
             if _cooldown_left(name) > 0.0:
                 continue
+            runner = _RUNNERS.get(name.split("-")[0])
+            if runner is None:  # a misconfigured provider name: skip it, don't mistake this for an LLM failure
+                logger.warning("no runner for provider %r", name)
+                continue
             try:
-                decision = _RUNNERS[name.split("-")[0]](model, tools, system, user, max_rounds)
+                decision = runner(model, tools, system, user, max_rounds)
             except Exception as exc:  # noqa: BLE001
                 if _quota_error(exc):
                     _cool_down(name, exc)
@@ -321,7 +329,7 @@ def llm_decide(llm, tools: list, system: str, user: str, max_rounds: int = 3) ->
                 if not tools:
                     if "json" in str(exc).lower():  # strict JSON mode rejected the reply: ask again in plain mode
                         try:
-                            decision = _RUNNERS[name.split("-")[0]](model, [], system, user, 1, json_mode=False)
+                            decision = runner(model, [], system, user, 1, json_mode=False)
                             if decision:
                                 return decision
                         except Exception:  # noqa: BLE001
@@ -332,7 +340,7 @@ def llm_decide(llm, tools: list, system: str, user: str, max_rounds: int = 3) ->
                     continue
                 # A malformed tool call: let the model still decide, without tools.
                 try:
-                    decision = _RUNNERS[name.split("-")[0]](model, [], system, user, 1)
+                    decision = runner(model, [], system, user, 1)
                 except Exception as exc2:  # noqa: BLE001
                     if _quota_error(exc2):
                         _cool_down(name, exc2)
@@ -343,9 +351,14 @@ def llm_decide(llm, tools: list, system: str, user: str, max_rounds: int = 3) ->
                     _last_error.pop(name, None)
                     _last_used["name"] = f"{name}:{GROQ_MODEL if name == 'groq' else GEMINI_MODEL}"
                 return decision
+            with _lock:
+                _last_error[name] = "unparseable reply"
+            logger.warning("%s returned no usable decision (empty or unparseable reply)", name)
         waits = [_cooldown_left(name) for name, _ in _providers()]
         if waits and 0 < min(waits) <= 70.0:
-            time.sleep(min(waits) + 0.2)
+            wait_s = min(waits) + 0.2
+            logger.info("every provider is cooling down; waiting %.1fs for the first one to come back", wait_s)
+            time.sleep(wait_s)
             continue
         break
     return {}

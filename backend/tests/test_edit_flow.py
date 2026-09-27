@@ -145,6 +145,38 @@ def test_editing_works_after_a_restart(client, plan, scripted_llm):
     assert done["reran_from"] == "itinerary_architect" and len(done["itinerary"]["days"]) == len(first["itinerary"]["days"])
 
 
+def test_reconnecting_the_stream_after_a_restart_recovers_the_plan(client, plan):
+    """GET /api/plan/{id}/stream used to only look at the in-memory checkpoint (or a freshly
+    queued /api/plan). After a restart, with nothing pending and an empty checkpoint, a thread
+    with a perfectly good saved plan 404'd instead of resuming it — /api/disrupt already had
+    this exact fallback; the stream route needs it too."""
+    import orchestration.graph as graph_module
+
+    thread_id, first = plan
+    graph_module._compiled_graph = None  # a new process has an empty in-memory checkpointer
+    res = client.get(f"/api/plan/{thread_id}/stream")
+    assert res.status_code == 200
+    events = [json.loads(line[5:]) for line in res.text.split("\n\n") if line.startswith("data:")]
+    assert not [e for e in events if e["type"] == "error"], events
+    done = next(e for e in events if e["type"] == "done")
+    assert done["itinerary"]["days"] == first["itinerary"]["days"]
+
+
+def test_get_itinerary_prefers_the_saved_plan_over_a_partial_checkpoint(client, plan):
+    """A reload used to read the live in-memory checkpoint first. After a crash mid-edit, that
+    checkpoint can be genuinely partial (no itinerary yet) even though a good plan is saved --
+    the reload must not show a blank page when a perfectly good plan is on disk."""
+    from orchestration.graph import get_graph
+
+    thread_id, first = plan
+    graph = get_graph()
+    config = {"configurable": {"thread_id": thread_id}}
+    graph.update_state(config, {"final_itinerary": None, "draft_itinerary": None}, as_node="itinerary_architect")
+    res = client.get(f"/api/itinerary/{thread_id}")
+    assert res.status_code == 200
+    assert res.json()["itinerary"]["days"] == first["itinerary"]["days"]
+
+
 def test_the_disruption_buttons_still_replan(client, plan):
     thread_id, first = plan
     city = first["selected_destinations"][0]["name"]

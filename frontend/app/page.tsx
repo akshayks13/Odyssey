@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Wordmark } from "@/components/Wordmark";
 import { openSample } from "@/lib/api";
+import { newThreadId } from "@/lib/id";
 
 const EXAMPLES = [
   "5 days in Kerala with 3 friends, around ₹40,000, nature and adventure at a relaxed pace",
@@ -74,12 +75,13 @@ export default function Home() {
 
   function handleSubmit(text: string) {
     if (!text.trim()) return;
-    const threadId = crypto.randomUUID();
+    const threadId = newThreadId();
     sessionStorage.setItem(`odyssey:${threadId}:message`, text);
     router.push(`/plan/${threadId}`);
   }
 
   async function showSample() {
+    setSampleError(false);
     try {
       router.push(`/plan/${await openSample()}`);
     } catch {

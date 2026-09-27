@@ -105,7 +105,11 @@ async def stream_plan(thread_id: str):
     elif existing.values:
         input_state = None
     else:
-        raise HTTPException(status_code=404, detail=f"Unknown thread_id: {thread_id}")
+        stored = load_state(thread_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"Unknown thread_id: {thread_id}")
+        graph.update_state(config, stored, as_node="itinerary_architect")
+        input_state = None
 
     return StreamingResponse(
         stream_graph_run(graph, thread_id, input_state, config),
@@ -153,11 +157,14 @@ async def get_itinerary(thread_id: str):
     graph = get_graph()
     config = {"configurable": {"thread_id": thread_id}}
     state = graph.get_state(config)
-    if state.values:
-        return serialize_final_state(state.values)
+    live = serialize_final_state(state.values) if state.values else None
+    if live and live["itinerary"] is not None:  # a real, live result beats anything stale
+        return live
     saved = load_itinerary(thread_id)
-    if saved:
+    if saved:  # a good saved plan beats a partial/failed in-memory checkpoint (crash, restart)
         return saved
+    if live:  # still mid-run, nothing saved yet: report progress rather than 404
+        return live
     raise HTTPException(status_code=404, detail=f"Unknown thread_id: {thread_id}")
 
 

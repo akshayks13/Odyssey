@@ -1,12 +1,21 @@
 "use client";
 
 import { useCallback, useRef, useState, useTransition } from "react";
-import { DisruptPayload, postJson } from "./api";
+import { DisruptPayload, postJson, withTimeout } from "./api";
 import { AGENT_ORDER, AgentMeta, AgentStatus, AgentStepEvent, EDIT_AGENT } from "./types";
+
+// A live run can legitimately take several minutes under provider rate-limiting (a retry
+// cascade across every Gemini key plus Groq adds up). This is a backstop against a genuinely
+// dead connection, not a normal-latency budget.
+const STREAM_TIMEOUT_MS = 10 * 60_000;
 
 export interface AgentStreamState {
   statuses: Record<string, AgentStatus>;
   messages: { agent: string; message: string; meta?: AgentMeta }[];
+  /** The tool an agent is calling right now, live from `tool_result` frames — real-time
+   * evidence that a step is doing something during a long wait. Cleared once the agent's
+   * step completes. */
+  liveTool: Record<string, string | null>;
   latest: AgentStepEvent | null;
   isStreaming: boolean;
   error: string | null;
@@ -25,6 +34,7 @@ export function useAgentStream() {
   const [state, setState] = useState<AgentStreamState>({
     statuses: initialStatuses(),
     messages: [],
+    liveTool: {},
     latest: null,
     isStreaming: false,
     error: null,
@@ -32,6 +42,9 @@ export function useAgentStream() {
   const [, startTransition] = useTransition();
   const abortRef = useRef<AbortController | null>(null);
 
+  /** Returns whether a terminal frame (done/error) was actually seen, so the caller can tell
+   * a clean finish apart from a connection that just quietly ended (proxy timeout, backend
+   * crash) without ever saying so — that used to leave "Working on it…" on screen forever. */
   const consumeStream = useCallback(async (res: Response) => {
     if (!res.ok || !res.body) {
       throw new Error(`Request failed (${res.status})`);
@@ -39,6 +52,7 @@ export function useAgentStream() {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let sawTerminalFrame = false;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -60,15 +74,20 @@ export function useAgentStream() {
           continue;
         }
 
+        if (event.type === "error" || event.type === "done") sawTerminalFrame = true;
+
         startTransition(() => {
           setState((prev) => {
             const next: AgentStreamState = { ...prev, latest: event };
 
             if (event.type === "step_start" && event.agent) {
               next.statuses = { ...prev.statuses, [event.agent]: "running" };
+            } else if (event.type === "tool_result" && event.agent) {
+              next.liveTool = { ...prev.liveTool, [event.agent]: event.tool || null };
             } else if (event.type === "step_complete" && event.agent) {
               next.statuses = { ...prev.statuses, [event.agent]: "done" };
               next.messages = [...prev.messages, { agent: event.agent, message: event.message || "", meta: event.meta }];
+              next.liveTool = { ...prev.liveTool, [event.agent]: null };
             } else if (event.type === "error") {
               next.error = event.message || "Unknown error";
               next.isStreaming = false;
@@ -83,6 +102,7 @@ export function useAgentStream() {
         });
       }
     }
+    return sawTerminalFrame;
   }, []);
 
   const connectStream = useCallback(
@@ -91,9 +111,9 @@ export function useAgentStream() {
         method: "GET",
         headers: { Accept: "text/event-stream" },
         cache: "no-store",
-        signal: abortRef.current?.signal,
+        signal: withTimeout(STREAM_TIMEOUT_MS, abortRef.current?.signal),
       });
-      await consumeStream(res);
+      return consumeStream(res);
     },
     [consumeStream]
   );
@@ -108,6 +128,7 @@ export function useAgentStream() {
       setState((prev) => ({
         statuses: initial,
         messages: [],
+        liveTool: {},
         latest: prev.latest,
         isStreaming: true,
         error: null,
@@ -115,11 +136,19 @@ export function useAgentStream() {
 
       try {
         await queue(controller.signal);
-        await connectStream(threadId);
+        const sawTerminalFrame = await connectStream(threadId);
+        if (!sawTerminalFrame && !controller.signal.aborted) {
+          setState((prev) => ({ ...prev, error: "The connection ended before the plan finished. Please try again.", isStreaming: false }));
+        }
       } catch (err) {
         const e = err as Error;
         if (e.name !== "AbortError") {
           setState((prev) => ({ ...prev, error: e.message, isStreaming: false }));
+        }
+      } finally {
+        // Belt and braces: whatever happened above, this run must never leave the UI spinning.
+        if (!controller.signal.aborted) {
+          setState((prev) => (prev.isStreaming ? { ...prev, isStreaming: false } : prev));
         }
       }
     },
@@ -133,6 +162,14 @@ export function useAgentStream() {
         (signal) => postJson("/api/plan", { message, thread_id: threadId }, signal),
         { ...initialStatuses(), trip_analyst: "running" }
       ),
+    [run]
+  );
+
+  /** Reconnect to an already-queued run — no new POST — for a reload or tab reopen while a
+   * plan/edit/disruption is still in flight. The backend resumes from its checkpoint (or, after
+   * a restart, from the saved state) and replays whatever already happened before continuing. */
+  const resumeStream = useCallback(
+    (threadId: string) => run(threadId, async () => undefined, initialStatuses()),
     [run]
   );
 
@@ -157,5 +194,5 @@ export function useAgentStream() {
     [run]
   );
 
-  return { ...state, startPlan, revise, injectDisruption };
+  return { ...state, startPlan, revise, injectDisruption, resumeStream };
 }

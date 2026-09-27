@@ -6,6 +6,12 @@ import itertools
 
 import networkx as nx
 
+# An "unavailable" leg (mapbox_api.py returns 0.0h/₹0/0km when no road, flight or train was
+# found) must never look like the cheapest, fastest hop in the graph — that would make the
+# search prefer a pair with no real way to travel between them. Push it far outside the range
+# of any real leg without using inf, which would poison heapq/heuristic arithmetic.
+_UNAVAILABLE_TIME_HOURS = 999.0
+
 
 def build_travel_graph(destinations: list[str], get_leg) -> nx.DiGraph:
     """Build a directed graph where edges hold (time, cost, distance, mode).
@@ -19,10 +25,11 @@ def build_travel_graph(destinations: list[str], get_leg) -> nx.DiGraph:
     graph.add_nodes_from(destinations)
     for origin, dest in itertools.permutations(destinations, 2):
         leg = get_leg(origin, dest)
+        unavailable = leg.get("source") == "unavailable"
         graph.add_edge(
             origin,
             dest,
-            time=leg["duration_hours"],
+            time=_UNAVAILABLE_TIME_HOURS if unavailable else leg["duration_hours"],
             cost=leg["cost_inr"],
             distance=leg["distance_km"],
             mode=leg.get("mode", "road"),
