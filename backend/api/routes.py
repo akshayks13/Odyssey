@@ -6,32 +6,28 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from api.sse import stream_graph_run, serialize_final_state
-from config import (
-    FOURSQUARE_API_KEY,
-    LANGSMITH_PROJECT,
-    LANGSMITH_TRACING,
-    MAPBOX_API_KEY,
-)
-from llm import llm_provider_name, providers_status
+from api.sse import serialize_final_state, stream_graph_run
 from models.schemas import Disruption, DisruptionType
 from orchestration.graph import get_graph
 from orchestration.state import initial_state
-from services.itinerary_service import copy_sample, load_itinerary, load_state
+from tools import world
 
 router = APIRouter(prefix="/api")
 
 _SSE_HEADERS = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"}
-_pending: dict[str, dict] = {}
+_pending: dict[str, dict] = {}  # input for the next stream of a thread (a new plan or an edit)
 
 
-def _graph_config(thread_id: str, *tags: str) -> dict:
-    return {
-        "configurable": {"thread_id": thread_id},
-        "run_name": f"odyssey:{thread_id[:8]}",
-        "tags": ["odyssey", *tags],
-        "metadata": {"thread_id": thread_id},
-    }
+def _config(thread_id: str) -> dict:
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def _current(thread_id: str) -> dict:
+    """The plan a thread has now (LangGraph's in-memory checkpoint), or 404."""
+    values = get_graph().get_state(_config(thread_id)).values
+    if not values:
+        raise HTTPException(status_code=404, detail=f"Unknown thread_id: {thread_id}")
+    return values
 
 
 class PlanRequest(BaseModel):
@@ -55,31 +51,20 @@ class DisruptRequest(BaseModel):
 
 @router.post("/plan")
 async def create_plan(req: PlanRequest):
-    """Start a LangGraph planning session. Returns `thread_id`; the client
-    then opens GET /api/plan/{thread_id}/stream for SSE."""
+    """Start a planning session. The client then opens GET /api/plan/{thread_id}/stream."""
     thread_id = req.thread_id or str(uuid.uuid4())
     _pending[thread_id] = initial_state(req.message)
     return {"thread_id": thread_id}
 
 
-@router.post("/sample")
-async def open_sample():
-    """Open the saved sample trip as a new thread. Needs no model, so a demo works when none is available."""
-    thread_id = str(uuid.uuid4())
-    if not copy_sample(thread_id):
-        raise HTTPException(status_code=404, detail="No sample trip is saved")
-    return {"thread_id": thread_id}
-
-
 @router.post("/revise")
 async def revise_plan(req: ReviseRequest):
-    """Change an existing plan with a sentence. The Edit Router decides which agents re-run; the
-    client then opens the stream. Works from the stored state, so it survives a server restart."""
-    stored = load_state(req.thread_id)
-    if stored is None or not req.message.strip():
-        raise HTTPException(status_code=404 if stored is None else 422, detail="Unknown thread_id or empty message")
+    """Change an existing plan with a sentence. The Edit Router decides which agents re-run; the client
+    then opens the stream."""
+    if not req.message.strip():
+        raise HTTPException(status_code=422, detail="Empty message")
     _pending[req.thread_id] = {
-        **stored,
+        **_current(req.thread_id),
         "edit_request": req.message.strip(),
         "edit_directive": None,
         "assistant_reply": None,
@@ -90,98 +75,39 @@ async def revise_plan(req: ReviseRequest):
 
 @router.get("/plan/{thread_id}/stream")
 async def stream_plan(thread_id: str):
-    """SSE stream of one graph run.
-
-    Uses `graph.astream(version="v2", stream_mode=["messages","updates","custom"], subgraphs=True)`
-    when the installed LangGraph accepts `version`; otherwise the same
-    stream_mode list on `astream` (LangGraph 0.2.60).
-    """
+    """SSE stream of one run: a new plan, an edit, or the replan after a disruption."""
     graph = get_graph()
-    config = _graph_config(thread_id, "stream")
-    pending = _pending.pop(thread_id, None)
-    existing = graph.get_state(config)
-    if pending is not None:
-        input_state = pending
-    elif existing.values:
-        input_state = None
-    else:
-        stored = load_state(thread_id)
-        if stored is None:
-            raise HTTPException(status_code=404, detail=f"Unknown thread_id: {thread_id}")
-        graph.update_state(config, stored, as_node="itinerary_architect")
-        input_state = None
-
-    return StreamingResponse(
-        stream_graph_run(graph, thread_id, input_state, config),
-        media_type="text/event-stream",
-        headers=_SSE_HEADERS,
-    )
+    config = _config(thread_id)
+    input_state = _pending.pop(thread_id, None)
+    if input_state is None:
+        _current(thread_id)  # 404 if the thread does not exist; otherwise resume (a disruption was injected)
+    return StreamingResponse(stream_graph_run(graph, thread_id, input_state, config), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/disrupt")
 async def inject_disruption(req: DisruptRequest):
-    """Inject a live disruption into an existing session. The client then
-    reconnects via GET /api/plan/{thread_id}/stream to run the targeted replan."""
-    graph = get_graph()
-    config = _graph_config(req.thread_id, "disrupt")
-
-    existing_state = graph.get_state(config)
-    if not existing_state.values:  # not in memory (server restarted, or the sample trip): resume from the saved plan
-        stored = load_state(req.thread_id)
-        if stored is None:
-            raise HTTPException(status_code=404, detail=f"Unknown thread_id: {req.thread_id}")
-        graph.update_state(config, stored, as_node="itinerary_architect")
-        existing_state = graph.get_state(config)
-
-    disruption = Disruption(
-        type=req.type,
-        target=req.target,
-        description=req.description,
-        day=req.day,
-        new_budget_inr=req.new_budget_inr,
-    )
-    existing_disruptions = existing_state.values.get("disruptions", [])
-
-    graph.update_state(
-        config,
-        {"disruptions": [*existing_disruptions, disruption], "iteration_count": 0, "edit_directive": None, "assistant_reply": None},
-        as_node="itinerary_architect",
+    """Inject a disruption. The client then reconnects to the stream, which starts at the Critic."""
+    values = _current(req.thread_id)
+    disruption = Disruption(type=req.type, target=req.target, description=req.description, day=req.day, new_budget_inr=req.new_budget_inr)
+    get_graph().update_state(
+        _config(req.thread_id),
+        {"disruptions": [*values.get("disruptions", []), disruption], "iteration_count": 0, "edit_directive": None, "assistant_reply": None},
+        as_node="itinerary_architect",  # the next node to run is the Critic
     )
     return {"thread_id": req.thread_id, "status": "injected"}
 
 
 @router.get("/itinerary/{thread_id}")
 async def get_itinerary(thread_id: str):
-    """Fetch the current finalized (or best-effort) state for a session —
-    used on page reload or for a non-streaming poll."""
-    graph = get_graph()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = graph.get_state(config)
-    live = serialize_final_state(state.values) if state.values else None
-    if live and live["itinerary"] is not None:  # a real, live result beats anything stale
-        return live
-    saved = load_itinerary(thread_id)
-    if saved:  # a good saved plan beats a partial/failed in-memory checkpoint (crash, restart)
-        return saved
-    if live:  # still mid-run, nothing saved yet: report progress rather than 404
-        return live
-    raise HTTPException(status_code=404, detail=f"Unknown thread_id: {thread_id}")
+    """The current plan of a thread (used when the plan page is reloaded)."""
+    return serialize_final_state(_current(thread_id))
 
 
 @router.get("/health")
 async def health():
-    """Server state. `models.state` says what the models are really doing — a configured key is not a
-    working key, so it reads "configured_but_untried" until one has actually answered."""
-    models = providers_status()
+    """Server state. Planning is deterministic and offline: no model, no external API."""
     return {
         "status": "ok",
-        "model": llm_provider_name() or "unavailable",
-        "models": models,
-        "langsmith": {"enabled": LANGSMITH_TRACING, "project": LANGSMITH_PROJECT if LANGSMITH_TRACING else None},
-        "apis": {
-            "mapbox": "key set" if MAPBOX_API_KEY else "absent (OpenStreetMap only)",
-            "foursquare": "key set but unused" if FOURSQUARE_API_KEY else "unused",
-            "weather": "open-meteo",
-            "hotels_flights": "llm",
-        },
+        "model": "none (deterministic rules and search)",
+        "regions": [{"region": name, "cities": len(data["cities"])} for name, data in world.regions().items()],
     }

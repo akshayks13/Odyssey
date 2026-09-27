@@ -19,13 +19,12 @@ export interface Destination {
 export interface RouteLeg {
   origin: string;
   destination: string;
-  mode: "road" | "rail" | "air";
+  mode: "road" | "rail";
   distance_km: number;
   duration_hours: number;
   cost_inr: number;
   available: boolean;
   summary?: string | null;
-  airline?: string | null;
   vehicle?: string | null;
   source?: string | null;
   reason?: string | null;
@@ -39,7 +38,6 @@ export interface Route {
   total_cost_inr: number;
   search_algorithm: string;
   nodes_expanded: number;
-  return_leg?: RouteLeg | null;
 }
 
 export interface Hotel {
@@ -101,7 +99,6 @@ export interface ItineraryDay {
   weather?: DayWeather | null;
   items: ScheduledItem[];
   travel_leg?: RouteLeg | null;
-  departure_leg?: RouteLeg | null;
   overnight_hotel?: Hotel | null;
 }
 
@@ -133,16 +130,14 @@ export interface TripInfo {
 /** How an agent reached its answer: shown in the timeline as evidence of tool calling. */
 export interface AgentMeta {
   tools?: string[];
-  engine?: string | null;
   algorithms?: string[];
   note?: string;
 }
 
 export interface AgentStepEvent {
-  type: "init" | "step_start" | "step_complete" | "tool_result" | "message" | "custom" | "done" | "error";
+  type: "init" | "step_start" | "step_complete" | "done" | "error";
   thread_id?: string;
   agent?: string;
-  tool?: string;
   message?: string;
   meta?: AgentMeta;
   data?: unknown;

@@ -55,9 +55,3 @@ export async function postJson<T = unknown>(path: string, body?: unknown, signal
   }
   return res.json() as Promise<T>;
 }
-
-/** Opens the saved sample trip as a new thread. Needs no model. */
-export async function openSample(): Promise<string> {
-  const data = await postJson<{ thread_id: string }>("/api/sample");
-  return data.thread_id;
-}

@@ -1,10 +1,10 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import { CloudRain, HelpCircle, Info } from "lucide-react";
-import { fetchItinerary, openSample } from "@/lib/api";
+import { fetchItinerary } from "@/lib/api";
 import { useAgentStream } from "@/lib/useAgentStream";
 import { AgentStepEvent, Destination } from "@/lib/types";
 import { AgentTimeline } from "@/components/AgentTimeline";
@@ -31,7 +31,6 @@ function DestinationStrip({ destinations }: { destinations: Destination[] }) {
 export default function PlanPage() {
   const params = useParams<{ threadId: string }>();
   const threadId = params.threadId;
-  const router = useRouter();
   const { statuses, messages, latest, isStreaming, error, startPlan, revise, injectDisruption } = useAgentStream();
 
   const [planData, setPlanData] = useState<AgentStepEvent | null>(null);
@@ -83,14 +82,6 @@ export default function PlanPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latest]);
 
-  async function showSample() {
-    try {
-      router.push(`/plan/${await openSample()}`);
-    } catch {
-      /* the error above stays */
-    }
-  }
-
   function handleSend(message: string) {
     setTurns((t) => [...t, { role: "user", text: message }]);
     revise(threadId, message);
@@ -133,9 +124,6 @@ export default function PlanPage() {
           {(error || loadError) && (
             <div className="mt-4 rounded-2xl border border-brand-clay/20 bg-[#f8eae6] p-3 text-sm text-brand-clay">
               {error || loadError}
-              <button type="button" onClick={showSample} className="mt-2 block font-medium underline">
-                See a sample trip instead
-              </button>
             </div>
           )}
         </aside>
@@ -152,7 +140,7 @@ export default function PlanPage() {
                   value={answer}
                   onChange={(e) => setAnswer(e.target.value)}
                   autoFocus
-                  placeholder="e.g. Goa, in December"
+                  placeholder="e.g. Kerala, in December"
                   className="flex-1 rounded-full border border-line px-4 py-2.5 text-sm focus:border-brand-primary focus:outline-none"
                 />
                 <button
@@ -200,7 +188,7 @@ export default function PlanPage() {
                   <CloudRain className="mt-0.5 h-4 w-4 shrink-0 text-brand-primary" />
                   <p>
                     Rain is likely on {rainyDays.map((d) => `day ${d.day_number} (${d.destination})`).join(", ")}
-                    {rainyDays.some((d) => d.weather?.source !== "forecast") ? " — based on last year's weather for these dates" : ""}. Indoor
+                    {" — typical for that month"}. Indoor
                     sights are scheduled first on those days; pack a raincoat.
                   </p>
                 </div>

@@ -13,12 +13,11 @@ import {
   Wallet,
 } from "lucide-react";
 import { Wordmark } from "@/components/Wordmark";
-import { openSample } from "@/lib/api";
 import { newThreadId } from "@/lib/id";
 
 const EXAMPLES = [
   "5 days in Kerala with 3 friends, around ₹40,000, nature and adventure at a relaxed pace",
-  "From Chennai to Delhi for 4 days, budget ₹50,000, food and culture",
+  "A week in Munnar and Alleppey for a family of 4, ₹1 lakh, tea hills, backwaters and food",
   "4-day Kerala trip for 2, by train, budget ₹35,000, beach and slow mornings",
 ];
 
@@ -31,7 +30,7 @@ const features = [
   {
     icon: Compass,
     title: "A sensible route",
-    description: "We pick road, train, or flight between stops. Say “by train” if you want to choose.",
+    description: "We pick road or train between stops and the shortest order to visit them. Say “by train” if you want to choose.",
   },
   {
     icon: Wallet,
@@ -71,22 +70,12 @@ const fadeUp = {
 export default function Home() {
   const router = useRouter();
   const [message, setMessage] = useState("");
-  const [sampleError, setSampleError] = useState(false);
 
   function handleSubmit(text: string) {
     if (!text.trim()) return;
     const threadId = newThreadId();
     sessionStorage.setItem(`odyssey:${threadId}:message`, text);
     router.push(`/plan/${threadId}`);
-  }
-
-  async function showSample() {
-    setSampleError(false);
-    try {
-      router.push(`/plan/${await openSample()}`);
-    } catch {
-      setSampleError(true);
-    }
   }
 
   function onSearch(event: FormEvent) {
@@ -196,9 +185,6 @@ export default function Home() {
               </button>
             ))}
           </div>
-          <button type="button" onClick={showSample} className="mt-4 text-sm font-medium text-brand-primary hover:underline">
-            {sampleError ? "Sample trip unavailable" : "Or see a sample trip"}
-          </button>
         </div>
       </section>
 

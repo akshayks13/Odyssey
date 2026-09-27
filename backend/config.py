@@ -1,51 +1,7 @@
-"""Environment and API keys.
-
-Missing keys skip the matching live API and the tool falls back once: Mapbox to OpenStreetMap,
-a hotel or fare quote to nothing at all. There is no bundled seed data to fall back to.
-"""
+"""Settings. The planner is offline and deterministic, so there are no API keys."""
 from __future__ import annotations
 
 import os
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-# Load .env from the backend/ directory if present
-load_dotenv(Path(__file__).parent / ".env")
-
-BACKEND_DIR = Path(__file__).parent
-PROJECT_ROOT = BACKEND_DIR.parent
-DB_PATH = Path(os.getenv("ODYSSEY_DB_PATH") or BACKEND_DIR / "odyssey.db")
-
-# --- LLM ---------------------------------------------------------------
-GEMINI_API_KEYS = [k.strip() for k in os.getenv("GEMINI_API_KEY", "").split(",") if k.strip()]  # several keys rotate
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-
-# Tests / CI skip live model calls.
-LLM_DISABLED = os.getenv("ODYSSEY_DISABLE_LLM", "").lower() in {"1", "true", "yes"}
-
-# --- LangSmith observability -------------------------------------------
-# LangGraph/LangChain auto-trace every node + tool call once these are set.
-# Both LANGSMITH_* and the older LANGCHAIN_* names are populated because
-# some langchain-core versions still read the latter.
-LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY", "") or os.getenv("LANGCHAIN_API_KEY", "")
-LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT") or os.getenv("LANGCHAIN_PROJECT") or "odyssey"
-LANGSMITH_TRACING = bool(LANGSMITH_API_KEY) and os.getenv("LANGSMITH_TRACING", "true").lower() not in {"0", "false", "no"}
-
-if LANGSMITH_API_KEY and LANGSMITH_TRACING:
-    os.environ["LANGSMITH_TRACING"] = "true"
-    os.environ["LANGCHAIN_TRACING_V2"] = "true"
-    os.environ["LANGSMITH_API_KEY"] = LANGSMITH_API_KEY
-    os.environ["LANGCHAIN_API_KEY"] = LANGSMITH_API_KEY
-    os.environ["LANGSMITH_PROJECT"] = LANGSMITH_PROJECT
-    os.environ["LANGCHAIN_PROJECT"] = LANGSMITH_PROJECT
-
-# --- External travel APIs (all optional) ---------------------------------
-MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
-FOURSQUARE_API_KEY = os.getenv("FOURSQUARE_API_KEY", "")
 
 # --- Replanning ---------------------------------------------------------
 MAX_REPLAN_ITERATIONS = int(os.getenv("MAX_REPLAN_ITERATIONS", "3"))

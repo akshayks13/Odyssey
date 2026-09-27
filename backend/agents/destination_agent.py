@@ -1,237 +1,176 @@
-"""Destination Discovery — pick which cities to keep and load their sights.
+"""Destination Discovery — choose which cities to visit and load their sights.
 
-Role: explorer. Rank candidate cities for the parsed TripSpec; do not order
-them on a map and do not book hotels.
+Role: explorer. Ranks the region's cities for this traveller; does not order them or book hotels.
 
-Decides: which 1..N cities to keep (never a closed/weather-risky city; never
-the origin/home city as a sightseeing stop). Checks drive times with
-`get_directions` so the stops are not a day apart.
-
-Computes: weighted cosine preference score per city; weather; attraction
-list per selected city. Honours cities the user pinned or excluded.
-
-Tools the model can call: `search_attractions`, `get_directions`. The code itself uses
-`search_destinations` (LLM places for any region), weather for the trip dates,
-and `score_preference_match`, because it always needs those.
+Rules:
+  1. Score every city: cosine similarity between the traveller's interests and the city's profile.
+     A city where rain is likely on most trip days loses 10%.
+  2. Never pick a city that is closed, hit by a storm, excluded by the traveller, or that the Critic
+     said to avoid.
+  3. Cities the traveller named (or pinned in an edit) come first.
+  4. Fill up to ceil(days / 2) cities (max 4), best score first, but only cities within one day's
+     travel (UCS road time <= the daily limit) of a city already chosen, so the stops stay close. Without
+     named cities the set is grown from every seed city and the best total score wins.
+  5. Sent back by the Critic: keep the chosen cities that are still fine, replace only the blocked one;
+     for empty days (too few sights) take one city more.
+  6. Each sight gets a preference score: the traveller's weight for its category (80%) and its rating (20%).
 """
 from __future__ import annotations
 
+import math
+from datetime import date, timedelta
+
+from agents.common import trace
 from algorithms.planning import activity_is_excluded
-from llm import MODEL_UNAVAILABLE, agent_trace, get_llm, llm_decide
 from models.schemas import Activity, Coordinates, Destination, DisruptionType, EditLocks, TripSpec
 from orchestration.state import TripState
-from tools import pmap
-from tools.foursquare_api import search_attractions, search_destinations
-from tools.mapbox_api import geocode_location, get_directions, haversine_km
-from tools.preference_scorer import score_preference_match
-from tools.weather import trip_weather
+from tools import world
+from tools.preference_scorer import score_preference_match, sight_preference
 
-_DEFAULT_SCORES = {
-    "nature": 0.5,
-    "adventure": 0.4,
-    "food": 0.4,
-    "nightlife": 0.2,
-    "relaxation": 0.5,
-    "culture": 0.4,
-    "shopping": 0.3,
-}
+RAIN_PENALTY = 0.9
+DISRUPTED_PENALTY = 0.15
 
 
-def _country_of(region: str) -> str:
-    return region.split(",")[-1].strip() if "," in region else "India"
+def _trip_dates(spec: TripSpec) -> list[date]:
+    start = date.fromisoformat(spec.start_date) if spec.start_date else date.today()
+    return [start + timedelta(days=i) for i in range(spec.duration_days)]
 
 
-def _within_a_days_drive(cities: list[Destination], max_daily_hours: float) -> list[Destination]:
-    """Keep the best-ranked city and those a day's drive from it (about 50 km/h), so stops are not hours apart."""
-    if not cities:
-        return cities
-    first = cities[0].coordinates
-    return [c for c in cities if haversine_km(first.lat, first.lng, c.coordinates.lat, c.coordinates.lng) <= max_daily_hours * 50]
-
-
-def _match_named(candidates: list[Destination], wanted: list[str]) -> list[Destination]:
-    by_lower = {c.name.lower(): c for c in candidates}
-    picked: list[Destination] = []
-    for name in wanted:
-        match = by_lower.get(name.lower())
-        if match and match not in picked:
-            picked.append(match)
-    return picked
-
-
-def _resolve_pinned(names: list[str], candidates: list[Destination], spec: TripSpec) -> list[Destination]:
-    """Cities the user asked for: the discovered ones, or geocoded if discovery didn't list them."""
-    by_lower = {c.name.lower(): c for c in candidates}
-    out: list[Destination] = []
-    for name in names:
-        hit = by_lower.get(name.lower())
-        if hit is None:
-            geo = geocode_location.invoke({"place_name": f"{name}, {_country_of(spec.destination_region)}"})
-            if geo["lat"] is None:
-                continue
-            hit = Destination(
-                name=geo.get("name") or name.title(),
+def rank_cities(spec: TripSpec, disrupted: set[str]) -> list[Destination]:
+    prefs = spec.preferences.as_dict()
+    dates = _trip_dates(spec)
+    ranked = []
+    for c in world.cities(spec.destination_region):
+        score = score_preference_match(prefs, c["profile"])
+        days = [world.weather_on(spec.destination_region, c["name"], d) for d in dates]
+        rainy = sum(1 for d in days if d["rainy"])
+        risky = rainy >= max(1, round(0.5 * len(days)))
+        if risky:
+            score *= RAIN_PENALTY
+        if c["name"] in disrupted:
+            score *= DISRUPTED_PENALTY
+        first = days[0]
+        ranked.append(
+            Destination(
+                name=c["name"],
                 region=spec.destination_region,
-                coordinates=Coordinates(lat=geo["lat"], lng=geo["lng"]),
-                description=f"Added at your request ({name.title()})",
+                coordinates=Coordinates(**c["coordinates"]),
+                preference_score=round(score, 4),
+                description=c["description"],
+                tags=c["tags"],
+                weather_summary=f"{first['condition']}, {first['tmin']:.0f}–{first['tmax']:.0f}°C, rain likely on {rainy} of {len(days)} days",
+                weather_risk=risky or c["name"] in disrupted,
             )
-        if hit not in out:
-            out.append(hit)
+        )
+    ranked.sort(key=lambda d: (-d.preference_score, d.name))
+    return ranked
+
+
+def choose_cities(spec: TripSpec, ranked: list[Destination], blocked: set[str], wanted: list[str], limit: int) -> list[Destination]:
+    """The best set of up to `limit` cities, each within a day's travel of another in the set.
+
+    With cities the traveller named (or kept from the last plan) the set grows from those. Otherwise it is
+    grown from every possible seed city and the set with the highest total score wins, so one remote
+    top-scoring city cannot leave the trip with a single stop.
+    """
+    region = spec.destination_region
+    cap = spec.constraints.max_daily_travel_hours
+    viable = [d for d in ranked if d.name not in blocked]
+    by_name = {d.name: d for d in viable}
+
+    def grow(chosen: list[Destination]) -> list[Destination]:
+        chosen = list(chosen)
+        for d in viable:
+            if len(chosen) >= limit:
+                break
+            if d not in chosen and any(world.road_route(region, c.name, d.name)["hours"] <= cap for c in chosen):
+                chosen.append(d)
+        return chosen
+
+    base = [by_name[n] for n in dict.fromkeys(wanted) if n in by_name]
+    if base:
+        return grow(base[:limit])
+    clusters = [grow([seed]) for seed in viable]
+    return max(clusters, key=lambda c: (len(c), sum(d.preference_score for d in c)), default=[])
+
+
+def load_sights(spec: TripSpec, city_name: str, closed: set[str], locks: EditLocks) -> list[Activity]:
+    prefs = spec.preferences.as_dict()
+    out = []
+    for s in world.sights(spec.destination_region, city_name):
+        if s["name"] in closed or s["id"] in closed or activity_is_excluded(s["name"], locks):
+            continue
+        pref = 0.8 * sight_preference(prefs, s["category"]) + 0.2 * (s["rating"] / 5.0)
+        out.append(
+            Activity(
+                id=s["id"],
+                name=s["name"],
+                destination=city_name,
+                category=s["category"],
+                duration_minutes=s["duration_minutes"],
+                cost_inr=s["cost_inr"],
+                rating=s["rating"],
+                opening_hour=s["opening_hour"],
+                closing_hour=s["closing_hour"],
+                preference_score=round(pref, 4),
+                coordinates=Coordinates(**s["coordinates"]),
+                source="dataset",
+            )
+        )
     return out
 
 
 def destination_agent_node(state: TripState) -> dict:
-    spec = state["trip_spec"]
-    prefs = spec.preferences.as_dict()
-    disruptions = state.get("disruptions", [])
+    spec: TripSpec = state["trip_spec"]
     locks: EditLocks = state.get("edit_locks") or EditLocks()
-    sent_back = [d.reason for d in state.get("replan_directives", []) if d.target_agent == "destination_agent"]
+    disruptions = state.get("disruptions", [])
+    region = spec.destination_region
 
-    closed_or_risky_names = {
-        d.target for d in disruptions if d.type in (DisruptionType.CLOSURE, DisruptionType.WEATHER)
-    }
-    origin = (spec.origin_city or "").strip().lower()
-    avoid = [c for d in state.get("replan_directives", []) if d.target_agent == "destination_agent" for c in d.constraints.get("avoid", [])]
-    excluded_names = {n.lower() for n in [*locks.excluded_cities, *closed_or_risky_names, *avoid]} | ({origin} if origin else set())
+    disrupted = {d.target for d in disruptions if d.type in (DisruptionType.CLOSURE, DisruptionType.WEATHER)}
+    avoid = {c for d in state.get("replan_directives", []) if d.target_agent == "destination_agent" for c in d.constraints.get("avoid", [])}
+    excluded = {world.match_city(region, c) or c for c in locks.excluded_cities}
+    blocked = disrupted | avoid | excluded
 
-    raw_destinations = search_destinations.invoke({"region": spec.destination_region})
-    if not raw_destinations:  # the model listed no places: stop, don't invent a one-city trip
-        raise RuntimeError(MODEL_UNAVAILABLE)
+    ranked = rank_cities(spec, disrupted)
+    named = [world.match_city(region, c) or c for c in locks.pinned_cities] or world.cities_named_in(region, spec.raw_input)
+    wanted = list(named)
+    usual = min(4, spec.constraints.max_destinations, math.ceil(spec.duration_days / 2))
 
-    def build_candidate(d: dict) -> Destination:
-        score = score_preference_match.invoke({"preferences": prefs, "category_scores": d["activity_scores"]})["score"]
-        weather = trip_weather(d["name"], spec.start_date or "", spec.duration_days)
-        rainy_days = len(weather["rainy_dates"])
-        disrupted = d["name"] in closed_or_risky_names
-        return Destination(
-            name=d["name"],
-            region=spec.destination_region,
-            coordinates=Coordinates(lat=d["lat"], lng=d["lng"]),
-            preference_score=score * (0.15 if disrupted else 1.0),
-            description=d["description"],
-            tags=d["tags"],
-            weather_summary=weather["summary"],
-            weather_risk=rainy_days >= max(1, round(0.4 * spec.duration_days)) or disrupted,
-        )
+    # Sent back by the Critic: keep the cities that are still fine and replace only what was blocked.
+    # Days with nothing to see mean too few sights, so take one more city.
+    sent_back = [d for d in state.get("replan_directives", []) if d.target_agent == "destination_agent"]
+    if sent_back:
+        wanted = wanted + [d.name for d in state.get("selected_destinations", []) if d.name not in blocked]
+        if sent_back[-1].constraints.get("issue") == "LEISURE_DAY":
+            usual += 1
+    wanted = [c for c in dict.fromkeys(wanted) if c not in blocked]
+    limit = max(1, min(spec.duration_days, max(usual, len(wanted))))  # everything wanted, but never more cities than days
+    selected = choose_cities(spec, ranked, blocked, wanted, limit)
+    activities = {d.name: load_sights(spec, d.name, disrupted, locks) for d in selected}
 
-    candidates = [c for c in pmap(build_candidate, raw_destinations, workers=8) if c is not None]
-    candidates.sort(key=lambda d: d.preference_score, reverse=True)
-
-    max_destinations = max(1, min(spec.constraints.max_destinations, max(1, spec.duration_days // 2)))
-    viable = [c for c in candidates if c.name.lower() not in excluded_names]
-    named = [c for c in viable if c.name.lower() in spec.raw_input.lower()]
-    # The place they asked for is always a stop. Discovery may call it "New Delhi", so match by containment
-    # and take the best-ranked one.
-    requested = spec.destination_region.split(",")[0].strip().lower()
-    anchor = next((c for c in viable if requested and requested in c.name.lower()), None)
-    if anchor and anchor not in named:
-        named.insert(0, anchor)
+    notes = []
     if named:
-        max_destinations = max(max_destinations, min(len(named), spec.constraints.max_destinations))
-    # Never keep more cities than there are days: the schedule can only cover one city per day, and a
-    # city the schedule drops would still be routed to, priced, and drawn on the map.
-    max_destinations = min(max_destinations, spec.duration_days)
-    selected = (named or _within_a_days_drive(viable, spec.constraints.max_daily_travel_hours) or candidates)[:max_destinations]
-    llm_note = ""
-    decision: dict = {}
-
-    if locks.pinned_cities:
-        # The user chose the cities. Keep them; only replace one that has become unavailable.
-        keep = [c for c in _resolve_pinned(locks.pinned_cities, candidates, spec) if c.name.lower() not in excluded_names]
-        selected = (keep + [c for c in viable if c not in keep])[: max(len(locks.pinned_cities), 1)] or selected
-        llm_note = " Kept your chosen cities."
-    else:
-        decision = llm_decide(
-            get_llm(),
-            tools=[search_attractions, get_directions],
-            system=(
-                "You are Odyssey's Destination Discovery agent — the explorer, not the scheduler. "
-                "ROLE: pick which cities to keep as overnight/sightseeing stops. "
-                "YOU DECIDE: a short list of city names from the heuristic ranking. "
-                "YOU MUST NOT: invent a day plan, pick hotels, or choose travel order (Mobility does A*). "
-                "Prefer cities the user named. Never pick a disrupted city. "
-                "Never pick two names for the same city or neighbourhood (Fort Kochi and Kochi are one place). "
-                "origin/home city is how they arrive — not a sightseeing stop. "
-                "Use get_directions to check drive times: stops should be close enough that travel does not "
-                "eat the trip, and each stop needs enough sights for the days it will get. "
-                "Each candidate has the weather for the trip dates: avoid a stop that is mostly rain "
-                "if a comparable one is dry. "
-                "Call search_attractions on a shortlisted city to see whether it has enough to fill its days. "
-                "Then reply ONLY with JSON: {\"selected\": [\"City\", ...], \"reasoning\": \"...\"}."
-            ),
-            user=(
-                f"Region: {spec.destination_region}. Duration: {spec.duration_days} days. "
-                f"Max destinations: {max_destinations}. Max travel per day: {spec.constraints.max_daily_travel_hours}h. "
-                f"Preferences: {prefs}. Disrupted (avoid): {sorted(closed_or_risky_names)}. "
-                + (f"The reviewer sent this back because: {'; '.join(sent_back)}. " if sent_back else "")
-                + f"Heuristic ranking: {[{'name': d.name, 'score': d.preference_score, 'weather': d.weather_summary} for d in candidates[:8]]}."
-            ),
-        )
-        if decision.get("selected"):
-            wanted = [str(n) for n in decision["selected"] if str(n).lower() not in excluded_names]
-            picked = _match_named(viable, wanted)
-            picked = (named + [p for p in picked if p not in named])[:max(max_destinations, len(named))]  # never drop what they named
-            if picked:
-                selected = picked
-                llm_note = f" LLM selected {', '.join(d.name for d in selected)}"
-                if decision.get("reasoning"):
-                    llm_note += f" ({decision['reasoning'][:180]})"
-
-    raw_acts = pmap(
-        lambda dest: search_attractions.invoke(
-            {"destination": dest.name, "category": None, "lat": dest.coordinates.lat, "lng": dest.coordinates.lng}
-        ),
-        selected,
-        workers=4,
-    )
-
-    activities_by_dest: dict[str, list[Activity]] = {}
-    for dest, acts_raw in zip(selected, raw_acts):
-        acts: list[Activity] = []
-        for a in acts_raw or []:
-            if a.get("name") in closed_or_risky_names or a.get("id") in closed_or_risky_names:
-                continue
-            if dest.name in closed_or_risky_names or activity_is_excluded(a["name"], locks):
-                continue
-            category_score = score_preference_match.invoke(
-                {"preferences": prefs, "category_scores": {a["category"]: 1.0}}
-            )
-            coords = a.get("coordinates")
-            acts.append(
-                Activity(
-                    id=a["id"],
-                    name=a["name"],
-                    destination=dest.name,
-                    category=a["category"],
-                    duration_minutes=a["duration_minutes"],
-                    cost_inr=a["cost_inr"],
-                    rating=a["rating"],
-                    opening_hour=a["opening_hour"],
-                    closing_hour=a["closing_hour"],
-                    preference_score=max(a.get("preference_score", 0.5), category_score["score"]),
-                    coordinates=Coordinates(lat=coords["lat"], lng=coords["lng"]) if coords and coords.get("lat") is not None else dest.coordinates,
-                    is_closed=False,
-                    source=str(a.get("source") or ""),
-                )
-            )
-        activities_by_dest[dest.name] = acts
-
-    seen: set[str] = set()  # a sight listed under two stops is visited once, at the first
-    for name, acts in activities_by_dest.items():
-        activities_by_dest[name] = [a for a in acts if a.name.strip().lower() not in seen and not seen.add(a.name.strip().lower())]
-
-    names = ", ".join(d.name for d in selected)
-    disrupted_note = f" (demoted {len(closed_or_risky_names)} disrupted option(s))" if closed_or_risky_names else ""
+        notes.append(f"you asked for {', '.join(named)}")
+    kept = [c for c in wanted if c not in named]
+    if kept:
+        notes.append(f"kept {', '.join(kept)}")
+    if blocked:
+        notes.append(f"avoided {', '.join(sorted(blocked))}")
     message = (
-        f"Destination Agent: ranked {len(candidates)} candidates, selected [{names}] "
-        f"by preference match{disrupted_note}.{llm_note}"
+        f"Destination Agent: ranked {len(ranked)} cities by interest match, selected "
+        f"{', '.join(f'{d.name} ({d.preference_score:.2f})' for d in selected)}"
+        + (f"; {'; '.join(notes)}" if notes else "") + "."
     )
-
     return {
-        "candidate_destinations": candidates,
+        "candidate_destinations": ranked,
         "selected_destinations": selected,
-        "candidate_activities": activities_by_dest,
+        "candidate_activities": activities,
         "excluded_activity_ids": [],
-        "agent_meta": agent_trace(decision, algorithms=["weighted cosine preference scoring"]),
+        "agent_meta": trace(
+            tools=["score_preference_match", "weather_on", "road_route", "sights"],
+            algorithms=["cosine preference ranking", "UCS road-time proximity check"],
+            note=f"up to {limit} cities for {spec.duration_days} days, within {spec.constraints.max_daily_travel_hours:g}h of each other"
+            + ("; kept the cities still fine and replaced the rest" if sent_back else ""),
+        ),
         "agent_messages": [message],
     }

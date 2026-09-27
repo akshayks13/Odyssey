@@ -1,25 +1,75 @@
-"""OR-Tools VRPTW scheduler for a single day."""
+"""One day's timetable as a constraint satisfaction problem, solved by backtracking search.
+
+Formulation:
+    variables    one per item: each chosen sight, plus lunch and dinner
+    domains      start times in 15-minute steps: after the sight opens and after the traveller can get
+                 there from the hotel, and early enough to finish before it closes and before the day ends
+                 (lunch 12:00-14:00, dinner 19:00-21:00)
+    constraints  every pair (X, Y) must not overlap, with travel time between them:
+                 start(Y) >= end(X) + travel(X, Y)  or  start(X) >= end(Y) + travel(Y, X)
+
+Search: backtracking with
+    MRV            pick the unassigned variable with the fewest values left
+    value order    earliest start first, so the day stays compact
+    forward check  after each assignment, remove clashing values from every other domain and
+                   backtrack at once if a domain becomes empty
+If the full set of sights cannot fit, the least-wanted sight is dropped and the CSP is solved again.
+"""
 from __future__ import annotations
 
-from ortools.constraint_solver import pywrapcp
+import math
 
-_LUNCH = ("_meal_lunch", "Lunch", 12.0, 14.0, 45)
-_DINNER = ("_meal_dinner", "Dinner", 19.0, 21.0, 45)
-_DEFAULT_HOP_MINUTES = 12
-_MAX_DEPOT_MINUTES = 45  # the city centre stands in for the hotel; don't let a far-off centre block every day
-
-
-def _default_matrix(n: int) -> list[list[int]]:
-    return [[0 if i == j else _DEFAULT_HOP_MINUTES for j in range(n)] for i in range(n)]
+STEP = 15  # minutes per slot
+MEALS = (("_meal_lunch", "Lunch", 12.0, 14.0, 45), ("_meal_dinner", "Dinner", 19.0, 21.0, 45))
+DEFAULT_HOP_MINUTES = 10
+MAX_DEPOT_MINUTES = 45
+NODE_LIMIT = 50_000
 
 
-def _expand_matrix(base: list[list[int]], extra: int) -> list[list[int]]:
-    n = len(base) + extra
-    matrix = [row[:] + [_DEFAULT_HOP_MINUTES] * extra for row in base]
-    matrix += [[_DEFAULT_HOP_MINUTES] * n for _ in range(extra)]
-    for i in range(n):
-        matrix[i][i] = 0
-    return matrix
+class _Solver:
+    def __init__(self, items: list[dict], travel: list[list[int]]):
+        self.items = items
+        self.travel = travel
+        self.nodes = 0
+        self.backtracks = 0
+
+    def clash(self, x: int, sx: int, y: int, sy: int) -> bool:
+        ex = sx + self.items[x]["dur"]
+        ey = sy + self.items[y]["dur"]
+        return not (sy >= ex + self.travel[x][y] or sx >= ey + self.travel[y][x])
+
+    def solve(self, domains: dict[int, list[int]], assignment: dict[int, int]) -> dict[int, int] | None:
+        if len(assignment) == len(self.items):
+            return assignment
+        if self.nodes > NODE_LIMIT:
+            return None
+        unassigned = [v for v in domains if v not in assignment]
+        var = min(unassigned, key=lambda v: (len(domains[v]), v))  # MRV, ties by index (deterministic)
+        for value in domains[var]:
+            self.nodes += 1
+            pruned: dict[int, list[int]] = {}
+            wiped_out = False
+            for other in unassigned:
+                if other == var:
+                    continue
+                kept = [t for t in domains[other] if not self.clash(var, value, other, t)]
+                if not kept:
+                    wiped_out = True
+                    break
+                pruned[other] = kept
+            if not wiped_out:
+                result = self.solve({**domains, **pruned, var: [value]}, {**assignment, var: value})
+                if result is not None:
+                    return result
+            self.backtracks += 1
+        return None
+
+
+def _domain(item: dict, day_start: int, day_end: int, from_hotel: int) -> list[int]:
+    earliest = max(day_start + from_hotel, item["open"])
+    latest = min(item["close"], day_end) - item["dur"]
+    first = math.ceil(earliest / STEP) * STEP
+    return list(range(first, latest + 1, STEP))
 
 
 def solve_day_schedule(
@@ -28,143 +78,90 @@ def solve_day_schedule(
     day_end_hour: float = 21.0,
     travel_matrix_minutes: list[list[int]] | None = None,
     include_meals: bool = True,
-    max_time_in_seconds: float = 0.4,
 ) -> dict:
-    """Vehicle Routing with Time Windows for a single day / single vehicle.
+    """Timetable for one day.
 
     Args:
-        activities: dicts with id, name, duration_minutes, opening_hour,
-            closing_hour, preference_score, category.
-        day_start_hour: earliest start (later on an arrival day).
-        day_end_hour: latest return to depot.
-        travel_matrix_minutes: square matrix over [depot] + activities.
-            If omitted, a small intra-city default is used.
-        include_meals: add lunch/dinner nodes with time windows.
+        activities: dicts with id, name, duration_minutes, opening_hour, closing_hour,
+            preference_score, category.
+        day_start_hour / day_end_hour: the usable window (later on an arrival day).
+        travel_matrix_minutes: square matrix over [hotel] + activities. Missing: a short default hop.
+        include_meals: add lunch and dinner when their window falls inside the day.
 
     Returns:
-        scheduled (real activities), meals, selected_ids, status.
+        scheduled (sights with start/end hours), meals, selected_ids, status, and stats
+        (nodes tried, backtracks, sights dropped to make the day fit).
     """
+    stats = {"nodes": 0, "backtracks": 0, "dropped": 0}
     if not activities:
-        return {"scheduled": [], "meals": [], "selected_ids": [], "status": "NO_ACTIVITIES"}
+        return {"scheduled": [], "meals": [], "selected_ids": [], "status": "NO_ACTIVITIES", "stats": stats}
 
-    day_start = int(day_start_hour * 60)
-    day_end = int(day_end_hour * 60)
+    day_start, day_end = int(day_start_hour * 60), int(day_end_hour * 60)
+    n = len(activities)
+    base = travel_matrix_minutes if travel_matrix_minutes and len(travel_matrix_minutes) == n + 1 else None
 
-    # Keep activities that can fit their opening window; remap the travel matrix to match.
-    keep: list[int] = []
-    feasible: list[dict] = []
-    for i, act in enumerate(activities):
-        dur = max(15, int(act["duration_minutes"]))
-        open_m = max(day_start, int(float(act["opening_hour"]) * 60))
-        close_m = min(day_end, int(float(act["closing_hour"]) * 60))
-        if close_m - open_m < dur:
-            continue
-        keep.append(i)
-        feasible.append({**act, "duration_minutes": dur, "_open": open_m, "_close": close_m - dur})
-    if not feasible:
-        return {"scheduled": [], "meals": [], "selected_ids": [], "status": "INFEASIBLE"}
-
-    if travel_matrix_minutes and len(travel_matrix_minutes) == len(activities) + 1:
-        rows = [0] + [i + 1 for i in keep]
-        base = [[int(travel_matrix_minutes[r][c]) for c in rows] for r in rows]
-    else:
-        base = _default_matrix(len(feasible) + 1)
-
-    meal_nodes: list[dict] = []
-    if include_meals:
-        for mid, name, open_h, close_h, dur in (_LUNCH, _DINNER):
-            open_m, close_m = int(open_h * 60), int(close_h * 60)
-            if open_m >= day_start and close_m <= day_end + 60:
-                meal_nodes.append(
-                    {
-                        "id": mid,
-                        "name": name,
-                        "category": "meal",
-                        "duration_minutes": dur,
-                        "preference_score": 0.0,
-                        "_open": open_m,
-                        "_close": close_m - dur,
-                        "_meal": True,
-                    }
-                )
-
-    # index 0 = depot; then activities; then meals
-    nodes = [
-        {"id": "_depot", "duration_minutes": 0, "_open": day_start, "_close": day_end, "_depot": True},
-        *feasible,
-        *meal_nodes,
+    sights = [
+        {
+            "idx": i + 1,  # row in the travel matrix (0 is the hotel)
+            "id": a["id"],
+            "name": a["name"],
+            "category": a.get("category", "general"),
+            "pref": float(a.get("preference_score") or 0.5),
+            "dur": max(15, int(a["duration_minutes"])),
+            "open": int(float(a["opening_hour"]) * 60),
+            "close": int(float(a["closing_hour"]) * 60),
+        }
+        for i, a in enumerate(activities)
     ]
-    n = len(nodes)
-    matrix = _expand_matrix(base, len(meal_nodes))
-    for j in range(1, n):
-        matrix[0][j] = min(matrix[0][j], _MAX_DEPOT_MINUTES)
+    meals = []
+    if include_meals:
+        for mid, name, open_h, close_h, dur in MEALS:
+            if open_h * 60 >= day_start and close_h * 60 <= day_end + 60:
+                meals.append({"idx": None, "id": mid, "name": name, "category": "meal", "pref": 0.0, "dur": dur,
+                              "open": int(open_h * 60), "close": int(close_h * 60), "meal": True})
 
-    manager = pywrapcp.RoutingIndexManager(n, 1, 0)
-    routing = pywrapcp.RoutingModel(manager)
+    def hop(a: dict, b: dict) -> int:
+        if a.get("meal") or b.get("meal") or base is None:
+            return DEFAULT_HOP_MINUTES
+        return int(base[a["idx"]][b["idx"]])
 
-    def transit_cb(from_index, to_index):
-        a = manager.IndexToNode(from_index)
-        b = manager.IndexToNode(to_index)
-        return int(matrix[a][b]) + int(nodes[a]["duration_minutes"])
+    def from_hotel(item: dict) -> int:
+        if item.get("meal") or base is None:
+            return 0
+        return min(int(base[0][item["idx"]]), MAX_DEPOT_MINUTES)
 
-    transit_idx = routing.RegisterTransitCallback(transit_cb)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
-
-    # Skipping an activity costs more the longer it is and the more the traveller wants it; meals are soft.
-    for i, node in enumerate(nodes):
-        if node.get("_depot"):
-            continue
-        if node.get("_meal"):
-            penalty = 600
+    # Most-wanted first; when the day cannot hold them all, the last one is dropped and we try again.
+    candidates = sorted(sights, key=lambda s: -s["pref"])
+    while True:
+        items = candidates + meals
+        travel = [[0 if i == j else hop(a, b) for j, b in enumerate(items)] for i, a in enumerate(items)]
+        domains = {i: _domain(item, day_start, day_end, from_hotel(item)) for i, item in enumerate(items)}
+        solver = _Solver(items, travel)
+        result = None if any(not d for d in domains.values()) else solver.solve(domains, {})
+        stats["nodes"] += solver.nodes
+        stats["backtracks"] += solver.backtracks
+        if result is not None:
+            break
+        if candidates:
+            candidates = candidates[:-1]
+            stats["dropped"] += 1
+        elif meals:
+            meals = []  # not even the meals fit this window (a late arrival): schedule nothing
         else:
-            pref = float(node.get("preference_score") or 0.5)
-            penalty = int(400 + 4 * node["duration_minutes"] * (0.5 + pref) + 600 * pref)
-        routing.AddDisjunction([manager.NodeToIndex(i)], penalty)
+            return {"scheduled": [], "meals": [], "selected_ids": [], "status": "INFEASIBLE", "stats": stats}
 
-    # Waiting is allowed for the whole day: a sight that opens at 10:00 in a 07:00 day is a 3h wait.
-    horizon = day_end + 90
-    routing.AddDimension(transit_idx, horizon - day_start, horizon, False, "Time")
-    time_dim = routing.GetDimensionOrDie("Time")
-
-    for i, node in enumerate(nodes):
-        time_dim.CumulVar(manager.NodeToIndex(i)).SetRange(int(node["_open"]), int(node["_close"]))
-    time_dim.CumulVar(routing.Start(0)).SetRange(day_start, day_end)
-    time_dim.CumulVar(routing.End(0)).SetRange(day_start, day_end + 90)
-    # Finish as early as possible (an idle morning is not free), starting at the earliest feasible time.
-    time_dim.SetCumulVarSoftUpperBound(routing.End(0), day_start, 1)
-    routing.AddVariableMinimizedByFinalizer(time_dim.CumulVar(routing.Start(0)))
-    routing.AddVariableMinimizedByFinalizer(time_dim.CumulVar(routing.End(0)))
-
-    params = pywrapcp.DefaultRoutingSearchParameters()
-    params.first_solution_strategy = 3  # path cheapest arc
-    params.local_search_metaheuristic = 2  # guided local search
-    params.time_limit.FromMilliseconds(max(150, int(float(max_time_in_seconds) * 1000)))
-
-    solution = routing.SolveWithParameters(params)
-    if solution is None:
-        return {"scheduled": [], "meals": [], "selected_ids": [], "status": "INFEASIBLE"}
-
-    scheduled: list[dict] = []
-    meals: list[dict] = []
-    index = routing.Start(0)
-    while not routing.IsEnd(index):
-        node = nodes[manager.IndexToNode(index)]
-        if not node.get("_depot"):
-            start_m = solution.Value(time_dim.CumulVar(index))
-            row = {
-                "id": node["id"],
-                "name": node["name"],
-                "start_hour": round(start_m / 60, 2),
-                "end_hour": round((start_m + int(node["duration_minutes"])) / 60, 2),
-                "category": node.get("category", "general"),
-            }
-            (meals if node.get("_meal") else scheduled).append(row)
-        index = solution.Value(routing.NextVar(index))
-
-    scheduled.sort(key=lambda x: x["start_hour"])
+    rows = sorted(
+        ({"id": item["id"], "name": item["name"], "category": item["category"], "meal": item.get("meal", False),
+          "start_hour": round(start / 60, 2), "end_hour": round((start + item["dur"]) / 60, 2)}
+         for item, start in ((items[i], s) for i, s in result.items())),
+        key=lambda r: r["start_hour"],
+    )
+    scheduled = [{k: v for k, v in r.items() if k != "meal"} for r in rows if not r["meal"]]
+    meal_rows = [{k: v for k, v in r.items() if k != "meal"} for r in rows if r["meal"]]
     return {
         "scheduled": scheduled,
-        "meals": meals,
+        "meals": meal_rows,
         "selected_ids": [s["id"] for s in scheduled],
         "status": "FEASIBLE" if scheduled else "EMPTY",
+        "stats": stats,
     }

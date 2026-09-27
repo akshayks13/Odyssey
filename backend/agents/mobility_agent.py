@@ -1,206 +1,155 @@
-"""Mobility — order the selected cities and choose how to travel each hop.
+"""Mobility & Routing — choose road or rail for each pair of cities, then the visiting order.
 
-Role: mover. Visit order is weighted A* on Mapbox road times. The LLM then picks
-road / rail / air for every hop (including getting there and home), using
-flight and train quotes it asks for. Does not pick cities or hotels.
+Role: mover. Does not add or remove cities, or pick hotels.
 
-Decides: the mode per hop. Honours what the user asked for ("by train", "fly"). A drive longer than the
-daily travel limit is replaced by the fastest flight or train that exists, unless they asked for road.
-
-Computes: NetworkX graph + weighted A* (tried from every start city, best kept);
-road quotes (Mapbox, else OSRM); group prices (seats x travellers for air/rail; for road the vehicle
-the model chose: own car, taxi, tempo traveller or bus, priced per vehicle or seat by `estimate_road_cost`).
-
-Tools the model can call: `search_public_transport`, `check_transport_disruptions`.
-The code uses `get_directions` (road quotes) and `calculate_route_cost`.
+Steps:
+  1. For every pair of chosen cities, UCS over the road network (hours, km, towns passed) and, when both
+     have a station, UCS over the rail network (hours, fare).
+  2. Mode per pair, by rule:
+       - the traveller asked for rail or road             -> that mode, when it exists
+       - the Critic sent the plan back as too expensive   -> the cheaper mode
+       - otherwise rail if it is no slower than the road, or if the drive is longer than the daily
+         travel limit; else road (door to door)
+     A transport strike at a city doubles road time and adds 50% to road cost for trips in or out of it.
+  3. Visiting order: A* over (current city, cities visited) with an MST heuristic (admissible), on the
+     chosen travel times. UCS (h = 0) and greedy nearest-neighbour run on the same problem as baselines.
 """
 from __future__ import annotations
 
-import re
-
-from algorithms.astar import astar_route_search, build_travel_graph
-from llm import agent_trace, get_llm, llm_decide
+from agents.common import trace
+from algorithms.astar import astar_order, greedy_order
 from models.schemas import DisruptionType, EditLocks, Route, RouteLeg, TransportMode
 from orchestration.state import TripState
-from tools.cost_calculator import ROAD_VEHICLES, calculate_route_cost, estimate_road_cost
-from tools.mapbox_api import get_directions
-from tools.travel_market import check_transport_disruptions, search_public_transport
+from tools import world
+from tools.cost_calculator import ROAD_VEHICLES, estimate_road_cost, road_vehicle_for
 
-_MODES = {m.value for m in TransportMode}
-
-
-def _pair(origin: str, destination: str) -> str:
-    return f"{origin}|{destination}"
+STATION_TRANSFER_HOURS = 0.5  # getting to and from the station
+STRIKE_TIME_FACTOR = 2.0
+STRIKE_COST_FACTOR = 1.5
 
 
-def _leg(origin: str, destination: str, quote: dict, mode: str, travellers: int, available: bool = True, vehicle: str | None = None) -> RouteLeg:
-    """Air and rail quotes are per seat. A road hop is priced for the whole group by the vehicle the model chose."""
-    hours = float(quote.get("duration_hours") or 0)
+def hop_options(region: str, a: str, b: str, travellers: int, strike: bool) -> dict[str, dict]:
+    """Every way to get from a to b: {"road": {...}, "rail": {...}} (rail only when both have a station)."""
+    options = {}
+    road = world.road_route(region, a, b)
+    if road["found"]:
+        vehicle = road_vehicle_for(travellers)
+        hours = road["hours"] * (STRIKE_TIME_FACTOR if strike else 1.0)
+        cost = estimate_road_cost(road["km"], travellers, vehicle) * (STRIKE_COST_FACTOR if strike else 1.0)
+        via = [t for t in road["path"][1:-1]]
+        options["road"] = {"hours": round(hours, 2), "km": road["km"], "cost": round(cost, 2), "vehicle": vehicle, "via": via, "strike": strike}
+    rail = world.rail_route(region, a, b)
+    if rail["found"]:
+        options["rail"] = {"hours": round(rail["hours"] + STATION_TRANSFER_HOURS, 2), "km": road["km"] if road["found"] else 0.0,
+                           "cost": round(rail["fare_inr"] * travellers, 2), "vehicle": None, "via": rail["path"][1:-1], "strike": False}
+    return options
+
+
+def choose_mode(options: dict[str, dict], preferred: str | None, cheapest: bool, cap: float) -> str:
+    if preferred in options:
+        return preferred
+    if cheapest:
+        return min(options, key=lambda m: (options[m]["cost"], m))
+    if "rail" in options and "road" in options:
+        road, rail = options["road"], options["rail"]
+        return "rail" if rail["hours"] <= road["hours"] or road["hours"] > cap else "road"
+    return next(iter(options))
+
+
+def make_leg(a: str, b: str, mode: str, opt: dict, travellers: int) -> RouteLeg:
+    via = f" via {', '.join(opt['via'])}" if opt["via"] else ""
     if mode == "road":
-        priced = estimate_road_cost.invoke({"distance_km": float(quote.get("distance_km") or 0), "travellers": travellers, "vehicle": vehicle or "taxi"})
-        vehicle = priced["vehicle"]
-        cost = priced["cost_inr"] * float(quote.get("cost_multiplier") or 1.0)  # a strike makes the journey dearer
-        summary = f"Road ({ROAD_VEHICLES[vehicle]['label']}) {origin}→{destination} · {hours:.1f}h · ₹{int(cost):,}"
-        if vehicle == "bus" and travellers > 1:
-            summary += f" for {travellers}"
+        label = ROAD_VEHICLES[opt["vehicle"]]["label"]
+        summary = f"Road ({label}) {a}→{b}{via} · {opt['hours']:.1f}h · ₹{opt['cost']:,.0f}"
+        if opt["strike"]:
+            summary += " · slowed by a strike"
     else:
-        vehicle = None
-        cost = float(quote.get("cost_inr") or 0) * travellers
-        summary = quote.get("summary") or f"{mode.title()} {origin}→{destination} · {hours:.1f}h"
-        if travellers > 1:
-            summary += f" each · ₹{int(cost):,} for {travellers}"
+        summary = f"Train {a}→{b}{via} · {opt['hours']:.1f}h incl. station transfers · ₹{opt['cost']:,.0f} for {travellers}"
     return RouteLeg(
-        origin=origin,
-        destination=destination,
+        origin=a,
+        destination=b,
         mode=TransportMode(mode),
-        distance_km=float(quote.get("distance_km") or 0),
-        duration_hours=float(quote.get("duration_hours") or 0),
-        cost_inr=cost,
-        available=available,
+        distance_km=opt["km"],
+        duration_hours=opt["hours"],
+        cost_inr=opt["cost"],
         summary=summary,
-        airline=quote.get("operator"),
-        vehicle=vehicle,
-        source=quote.get("source"),
-        reason=quote.get("reason"),
+        vehicle=opt["vehicle"],
+        source="dataset",
     )
 
 
 def mobility_agent_node(state: TripState) -> dict:
-    selected = state.get("selected_destinations", [])
-    disruptions = state.get("disruptions", [])
-    spec = state.get("trip_spec")
+    spec = state["trip_spec"]
     locks: EditLocks = state.get("edit_locks") or EditLocks()
-    names = [d.name for d in selected]
-
+    names = [d.name for d in state.get("selected_destinations", [])]
+    region = spec.destination_region
     if not names:
-        return {
-            "route": Route(ordered_destinations=[]),
-            "agent_messages": ["Mobility Agent: no destinations available to route."],
-        }
+        return {"route": Route(ordered_destinations=[]), "agent_messages": ["Mobility Agent: no destinations to route."]}
 
-    transport_disrupted = {d.target for d in disruptions if d.type == DisruptionType.TRANSPORT}
-    travel_date = spec.start_date if spec and spec.start_date else ""
-    travellers = spec.travellers if spec else 1
-    origin_city = (spec.origin_city or "").strip() if spec else ""
-    if origin_city.lower() in {n.lower() for n in names}:
-        origin_city = ""
+    strikes = {d.target for d in state.get("disruptions", []) if d.type == DisruptionType.TRANSPORT}
+    cheapest = any(d.target_agent == "mobility_agent" and d.constraints.get("issue") == "BUDGET" for d in state.get("replan_directives", []))
+    cap = spec.constraints.max_daily_travel_hours
 
-    def road_quote(origin: str, destination: str) -> dict:
-        quote = dict(get_directions.invoke({"origin": origin, "destination": destination}))
-        if origin in transport_disrupted or destination in transport_disrupted:  # a strike: slower and pricier
-            quote["duration_hours"] = float(quote.get("duration_hours") or 0) * 5
-            quote["cost_multiplier"] = 3.0
-        return quote
+    # 1-2. Every pair: options by UCS, then a mode by rule. The chosen hours become A*'s step costs.
+    chosen: dict[tuple[str, str], tuple[str, dict]] = {}
+    unavailable: list[str] = []  # pairs with no way to travel by the mode the traveller asked for
+    dist: dict[str, dict[str, float]] = {a: {} for a in names}
+    for a in names:
+        for b in names:
+            if a == b:
+                continue
+            options = hop_options(region, a, b, spec.travellers, strike=a in strikes or b in strikes)
+            if not options:
+                continue
+            mode = choose_mode(options, locks.preferred_mode, cheapest, cap)
+            if locks.preferred_mode and locks.preferred_mode not in options and a < b:
+                unavailable.append(f"{a}–{b}")
+            chosen[(a, b)] = (mode, options[mode])
+            dist[a][b] = options[mode]["hours"]
 
-    def road_costs(quote: dict) -> dict:
-        """What this hop would cost the whole group in each kind of vehicle, so the model can weigh it against fares."""
-        return {v: estimate_road_cost.invoke({"distance_km": float(quote.get("distance_km") or 0), "travellers": travellers, "vehicle": v})["cost_inr"] for v in ROAD_VEHICLES}
-
-    # 1. Visit order: weighted A* over Mapbox road times, from whichever start city is quickest overall.
-    cap = spec.constraints.max_daily_travel_hours if spec else 4.0
-    graph = build_travel_graph(names, lambda o, d: road_quote(o, d))
-    search = min(
-        (astar_route_search(graph, start, names, max_daily_travel_hours=cap) for start in names),
-        key=lambda r: r["total_time_hours"],
-    )
+    # 3. Order: A* with the MST heuristic; UCS and greedy on the same problem for comparison.
+    search = astar_order(names, dist, "mst")
+    ucs = astar_order(names, dist, "zero")
+    greedy = greedy_order(names, dist)
     order = search["order"]
 
-    # 2. Every hop, with its road quote. The LLM chooses the mode for each.
-    hops: list[tuple[str, str]] = []
-    if origin_city:
-        hops.append((origin_city, order[0]))
-    hops += list(zip(order, order[1:]))
-    if origin_city:
-        hops.append((order[-1], origin_city))
-    road = {_pair(o, d): road_quote(o, d) for o, d in hops}
-
-    sent_back = [d.reason for d in state.get("replan_directives", []) if d.target_agent == "mobility_agent"]
-    decision = llm_decide(
-        get_llm(),
-        tools=[search_public_transport, check_transport_disruptions],
-        system=(
-            "You are Odyssey's Mobility agent — the mover, not the city picker. "
-            "ROLE: choose how to travel each hop: road, rail or air. "
-            "YOU DECIDE: the mode per hop. You know which places have airports and stations and when a "
-            "flight or train is worth it over a long drive; call search_public_transport to get a quote "
-            "before choosing rail or air (a place without an airport is quoted with the ride to the nearest one); "
-            "call check_transport_disruptions if a storm could stop a journey on the travel date. "
-            "Short drives stay on the road. Honour what the traveller asked for. "
-            "For road hops also choose ONE road_vehicle for the trip: own_car when they drive their own car from home "
-            "(they say so, or it is a road trip from where they live), tempo_traveller for a group of about 6 to 12, "
-            "bus only for a budget group on a well-served route, otherwise taxi (someone who flew in has no car). "
-            "Weigh road_cost_inr_by_vehicle against the air and rail fares. "
-            "Fares must leave room for hotels, food and sights: on a tight budget prefer a train over a flight. "
-            "Never fix a budget by choosing a very long drive (longer than the daily travel limit): take the flight or train even if the plan then runs over budget, which is reported. "
-            "YOU MUST NOT: reorder the cities, add cities, or pick hotels. "
-            'Reply ONLY with JSON: {"modes": {"Origin|Destination": "road|rail|air"}, "road_vehicle": "own_car|taxi|tempo_traveller|bus", "reasoning": "..."}.'
-        ),
-        user=(
-            f"Traveller's request: {spec.raw_input if spec else ''!r}. "
-            f"Preferred mode (from later instructions): {locks.preferred_mode or 'none'}. "
-            f"{travellers} traveller(s), travelling on {travel_date or 'a date to be decided'}, "
-            f"with a total budget of ₹{(spec.budget_inr if spec else 0):,.0f} for everything (fares are part of it). "
-            f"Hops with their road quote: {[{'hop': k, 'road_km': v['distance_km'], 'road_hours': v['duration_hours'], 'road_cost_inr_by_vehicle': road_costs(v)} for k, v in road.items()]}. "
-            f"Transport disruptions: {sorted(transport_disrupted)}."
-            + (f" The reviewer sent this back because: {'; '.join(sent_back)}." if sent_back else "")
-        ),
-    )
-    modes = {
-        "|".join(part.strip() for part in re.split(r"\||→|->", str(k)) if part.strip()): str(v).lower()
-        for k, v in (decision.get("modes") or {}).items()
-        if str(v).lower() in _MODES
-    }
-    if locks.preferred_mode in _MODES:
-        modes = {k: locks.preferred_mode for k in road}
-    vehicle = str(decision.get("road_vehicle") or "").lower()
-    if vehicle not in ROAD_VEHICLES:  # the model named none: a traveller who flies or takes a train in has no car
-        vehicle = "taxi" if any(m in ("air", "rail") for m in modes.values()) else "own_car"
-
-    # 3. Build the legs. A drive longer than the daily travel limit is not recommended unless the traveller asked for
-    # road: look for a flight or train and take the fastest. If no quote is available, stay on the road.
-    def make_leg(origin: str, destination: str) -> RouteLeg:
-        pair = _pair(origin, destination)
-        mode = modes.get(pair, "road")
-        available = destination not in transport_disrupted
-        road_hours = float(road[pair]["duration_hours"])
-        too_long = mode == "road" and road_hours > cap and locks.preferred_mode != "road"
-        options = ["air", "rail"] if too_long else ([mode] if mode in ("air", "rail") else [])
-        quotes = []
-        for option in options:
-            quote = search_public_transport.invoke({"origin": origin, "destination": destination, "mode": option, "date": travel_date})
-            if quote.get("available") and (not too_long or float(quote["duration_hours"]) <= 0.6 * road_hours):  # materially faster, or the drive stays
-                quotes.append((option, quote))
-        if quotes:
-            option, quote = min(quotes, key=lambda oq: float(oq[1]["duration_hours"])) if too_long else quotes[0]
-            return _leg(origin, destination, quote, option, travellers, available)
-        return _leg(origin, destination, road[pair], "road", travellers, available, vehicle)
-
-    legs = [make_leg(o, d) for o, d in hops]
-    return_leg = legs.pop() if origin_city else None
-
-    total = [*legs, *([return_leg] if return_leg else [])]
+    legs = [make_leg(a, b, *chosen[(a, b)], spec.travellers) for a, b in zip(order, order[1:]) if (a, b) in chosen]
     route = Route(
         ordered_destinations=order,
         legs=legs,
-        total_distance_km=round(sum(l.distance_km for l in total), 1),
-        total_duration_hours=round(sum(l.duration_hours for l in total), 2),
-        total_cost_inr=round(calculate_route_cost.invoke({"leg_costs_inr": [l.cost_inr for l in total], "travellers": travellers})["total_inr"], 2),
+        total_distance_km=round(sum(l.distance_km for l in legs), 1),
+        total_duration_hours=round(sum(l.duration_hours for l in legs), 2),
+        total_cost_inr=round(sum(l.cost_inr for l in legs), 2),
         search_algorithm=search["algorithm"],
         nodes_expanded=search["nodes_expanded"],
-        return_leg=return_leg,
     )
 
-    hop_bits = ", ".join(l.summary or f"{l.origin}->{l.destination} {l.mode.value}" for l in total) or "single stop"
-    message = (
-        f"Mobility Agent: {search['algorithm']} ordered {' -> '.join(order)} on road graph "
-        f"({search['nodes_expanded']} nodes); hops: {hop_bits}."
-    )
-    meta = agent_trace(
-        decision,
-        algorithms=[f"{search['algorithm']} ({search['nodes_expanded']} nodes expanded)"],
-        note="; ".join(
-            [f"{pair.replace('|', ' → ')}: {mode}" for pair, mode in modes.items()]
-            + ([f"road by {ROAD_VEHICLES[vehicle]['label']}"] if any(l.mode.value == "road" for l in total) else [])
+    why = []
+    if locks.preferred_mode:
+        why.append(f"{locks.preferred_mode} where possible, as asked")
+    used = {(l.origin, l.destination) for l in legs} | {(l.destination, l.origin) for l in legs}
+    missing = [p for p in unavailable if tuple(p.split("–")) in used]
+    if missing:
+        why.append(f"no {locks.preferred_mode} for {', '.join(missing)}, so by {'road' if locks.preferred_mode == 'rail' else 'rail'}")
+    if cheapest:
+        why.append("cheapest mode per hop (sent back as over budget)")
+    if strikes:
+        why.append(f"strike at {', '.join(sorted(strikes))}")
+    hops = "; ".join(l.summary for l in legs) or "a single stop, no travel between cities"
+    message = f"Mobility Agent: {' → '.join(order)} ({route.total_duration_hours:.1f}h of travel). {hops}." + (f" No {locks.preferred_mode} for {', '.join(missing)}." if missing else "")
+    return {
+        "route": route,
+        "agent_meta": trace(
+            tools=["road_route", "rail_route"],
+            algorithms=[
+                "UCS on road and rail networks",
+                f"{search['algorithm']}: {search['nodes_expanded']} nodes expanded",
+            ],
+            note=(
+                f"Same problem — UCS: {ucs['nodes_expanded']} nodes, {ucs['total_hours']:.1f}h; "
+                f"greedy: {greedy['total_hours']:.1f}h; A*: {search['total_hours']:.1f}h (optimal)"
+                + (f". Rules: {', '.join(why)}" if why else "")
+            ),
         ),
-    )
-    return {"route": route, "agent_meta": meta, "agent_messages": [message]}
+        "agent_messages": [message],
+    }

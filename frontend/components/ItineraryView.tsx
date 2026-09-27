@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Bed, Bus, Car, Coffee, CloudRain, Plane, Sun, TrainFront, Utensils } from "lucide-react";
+import { Bed, Bus, Car, Coffee, CloudRain, Sun, TrainFront, Utensils } from "lucide-react";
 import { Hotel, Itinerary, ItineraryDay, RouteLeg } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
@@ -24,7 +24,6 @@ const KIND_LABEL: Record<string, string> = { travel: "Travel day", leisure: "Fre
 
 function LegIcon({ leg }: { leg: RouteLeg }) {
   const className = "h-3.5 w-3.5";
-  if (leg.mode === "air") return <Plane className={className} />;
   if (leg.mode === "rail") return <TrainFront className={className} />;
   return leg.vehicle === "bus" ? <Bus className={className} /> : <Car className={className} />;
 }
@@ -41,9 +40,7 @@ function LegBlock({ leg, label }: { leg: RouteLeg; label: string }) {
       </p>
       <p className="mt-0.5 text-xs text-muted">
         {leg.mode}
-        {leg.airline ? ` · ${leg.airline}` : ""}
         {` · ${leg.duration_hours.toFixed(1)}h · ₹${leg.cost_inr.toLocaleString("en-IN")}`}
-        {leg.mode === "road" && leg.source && leg.source !== "mapbox" ? " · estimated" : ""}
       </p>
     </div>
   );
@@ -91,7 +88,7 @@ export function ItineraryView({ itinerary, hotels = [] }: { itinerary: Itinerary
                 <span className="ml-2 text-muted">— {day.destination}</span>
                 {day.weather && (
                   <span
-                    title={day.weather.source === "forecast" ? "Forecast" : "Typical for these dates (last year)"}
+                    title="Typical weather for that month"
                     className={cn(
                       "ml-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
                       day.weather.rainy ? "bg-[#e6eef2] text-[#2f5d75]" : "bg-wash text-muted"
@@ -147,7 +144,6 @@ export function ItineraryView({ itinerary, hotels = [] }: { itinerary: Itinerary
                     </div>
                   );
                 })}
-                {day.departure_leg && <LegBlock leg={day.departure_leg} label="Heading home" />}
                 {overnight && (
                   <div className="bg-wash px-5 py-3">
                     <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">

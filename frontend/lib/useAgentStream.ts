@@ -4,18 +4,12 @@ import { useCallback, useRef, useState, useTransition } from "react";
 import { DisruptPayload, postJson, withTimeout } from "./api";
 import { AGENT_ORDER, AgentMeta, AgentStatus, AgentStepEvent, EDIT_AGENT } from "./types";
 
-// A live run can legitimately take several minutes under provider rate-limiting (a retry
-// cascade across every Gemini key plus Groq adds up). This is a backstop against a genuinely
-// dead connection, not a normal-latency budget.
-const STREAM_TIMEOUT_MS = 10 * 60_000;
+// Planning is offline and takes well under a second; this is only a backstop against a dead connection.
+const STREAM_TIMEOUT_MS = 2 * 60_000;
 
 export interface AgentStreamState {
   statuses: Record<string, AgentStatus>;
   messages: { agent: string; message: string; meta?: AgentMeta }[];
-  /** The tool an agent is calling right now, live from `tool_result` frames — real-time
-   * evidence that a step is doing something during a long wait. Cleared once the agent's
-   * step completes. */
-  liveTool: Record<string, string | null>;
   latest: AgentStepEvent | null;
   isStreaming: boolean;
   error: string | null;
@@ -34,7 +28,6 @@ export function useAgentStream() {
   const [state, setState] = useState<AgentStreamState>({
     statuses: initialStatuses(),
     messages: [],
-    liveTool: {},
     latest: null,
     isStreaming: false,
     error: null,
@@ -82,12 +75,9 @@ export function useAgentStream() {
 
             if (event.type === "step_start" && event.agent) {
               next.statuses = { ...prev.statuses, [event.agent]: "running" };
-            } else if (event.type === "tool_result" && event.agent) {
-              next.liveTool = { ...prev.liveTool, [event.agent]: event.tool || null };
             } else if (event.type === "step_complete" && event.agent) {
               next.statuses = { ...prev.statuses, [event.agent]: "done" };
               next.messages = [...prev.messages, { agent: event.agent, message: event.message || "", meta: event.meta }];
-              next.liveTool = { ...prev.liveTool, [event.agent]: null };
             } else if (event.type === "error") {
               next.error = event.message || "Unknown error";
               next.isStreaming = false;
@@ -128,7 +118,6 @@ export function useAgentStream() {
       setState((prev) => ({
         statuses: initial,
         messages: [],
-        liveTool: {},
         latest: prev.latest,
         isStreaming: true,
         error: null,
@@ -166,8 +155,7 @@ export function useAgentStream() {
   );
 
   /** Reconnect to an already-queued run — no new POST — for a reload or tab reopen while a
-   * plan/edit/disruption is still in flight. The backend resumes from its checkpoint (or, after
-   * a restart, from the saved state) and replays whatever already happened before continuing. */
+   * plan/edit/disruption is still in flight. The backend resumes from its in-memory checkpoint. */
   const resumeStream = useCallback(
     (threadId: string) => run(threadId, async () => undefined, initialStatuses()),
     [run]

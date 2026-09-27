@@ -15,7 +15,7 @@ const STATUS_LABEL: Record<AgentStatus, string> = {
 /**
  * Drop only the agent's own name, which the row's heading already shows. Everything else the agent
  * said — tools, algorithms, its reasoning — stays, because that is what the run is judged on. The
- * model and the algorithms are no longer repeated in the prose; they arrive as `meta` and become chips.
+ * tools and algorithms are not repeated in the prose; they arrive as `meta` and become chips.
  */
 function cleanMessage(message: string): string {
   return message
@@ -29,9 +29,9 @@ function cleanMessage(message: string): string {
 function Chips({ meta }: { meta?: AgentMeta }) {
   const tools = meta?.tools ?? [];
   const algorithms = meta?.algorithms ?? [];
-  if (!tools.length && !algorithms.length && !meta?.engine) return null;
+  if (!tools.length && !algorithms.length) return null;
 
-  // Tools are listed with how many times each was called, so a model that checked three cities shows it.
+  // Tools are listed with how many times each was called.
   const counted = tools.reduce<Record<string, number>>((acc, t) => ({ ...acc, [t]: (acc[t] ?? 0) + 1 }), {});
 
   return (
@@ -39,7 +39,7 @@ function Chips({ meta }: { meta?: AgentMeta }) {
       {Object.entries(counted).map(([tool, n]) => (
         <span
           key={tool}
-          title="Tool the model chose to call"
+          title="Tool the agent called"
           className="rounded-full bg-selected px-2 py-0.5 font-mono text-[11px] text-brand-primary"
         >
           {tool}
@@ -55,11 +55,6 @@ function Chips({ meta }: { meta?: AgentMeta }) {
           {algorithm}
         </span>
       ))}
-      {meta?.engine && (
-        <span title="Model that answered" className="rounded-full bg-wash px-2 py-0.5 text-[11px] text-grey-500">
-          {meta.engine}
-        </span>
-      )}
     </div>
   );
 }
@@ -67,14 +62,10 @@ function Chips({ meta }: { meta?: AgentMeta }) {
 export function AgentTimeline({
   statuses,
   messages,
-  liveTool,
   finished = false,
 }: {
   statuses: Record<string, AgentStatus>;
   messages: { agent: string; message: string; meta?: AgentMeta }[];
-  /** The tool each running agent is calling right now, if any — real-time evidence of the
-   * multi-agent system actually doing something during a step, rather than a silent wait. */
-  liveTool?: Record<string, string | null>;
   finished?: boolean; // a saved plan opened without running: its steps are done
 }) {
   const lastFor = (agent: string) => [...messages].reverse().find((m) => m.agent === agent);
@@ -127,12 +118,6 @@ export function AgentTimeline({
                 </div>
                 {message && (
                   <p className="mt-1 text-sm leading-snug text-muted">{cleanMessage(message)}</p>
-                )}
-                {!message && status === "running" && liveTool?.[agent] && (
-                  <p className="mt-1 flex items-center gap-1.5 text-sm leading-snug text-muted">
-                    <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-brand-primary" aria-hidden />
-                    Calling <span className="font-mono text-[13px] text-brand-primary">{liveTool[agent]}</span>…
-                  </p>
                 )}
                 <Chips meta={entry?.meta} />
                 {entry?.meta?.note && (

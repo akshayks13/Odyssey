@@ -42,7 +42,6 @@ class TripSpec(BaseModel):
     preferences: PreferenceWeights = Field(default_factory=PreferenceWeights)
     constraints: TripConstraints = Field(default_factory=TripConstraints)
     start_date: Optional[str] = None  # ISO date, optional
-    origin_city: Optional[str] = None
     needs_clarification: list[str] = Field(default_factory=list)
     clarifying_question: Optional[str] = None  # set when the request cannot be planned yet
     raw_input: str = ""
@@ -70,7 +69,7 @@ class Activity(BaseModel):
     preference_score: float = 0.5
     coordinates: Optional[Coordinates] = None
     is_closed: bool = False  # set true by disruption injection
-    source: str = ""  # "foursquare" | "seed" | llm provider name
+    source: str = "dataset"
 
 
 class Destination(BaseModel):
@@ -91,7 +90,6 @@ class Destination(BaseModel):
 class TransportMode(str, Enum):
     ROAD = "road"
     RAIL = "rail"
-    AIR = "air"
 
 
 class RouteLeg(BaseModel):
@@ -103,7 +101,6 @@ class RouteLeg(BaseModel):
     cost_inr: float = 0.0
     available: bool = True
     summary: Optional[str] = None
-    airline: Optional[str] = None  # operator: airline or railway
     vehicle: Optional[str] = None  # for a road hop: own_car, taxi, tempo_traveller or bus
     source: Optional[str] = None
     reason: Optional[str] = None
@@ -117,7 +114,6 @@ class Route(BaseModel):
     total_cost_inr: float = 0.0
     search_algorithm: str = "weighted_astar"
     nodes_expanded: int = 0
-    return_leg: Optional[RouteLeg] = None  # last stop -> origin_city, when an origin was named
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +125,8 @@ class Hotel(BaseModel):
     destination: str
     price_per_night_inr: float
     rating: float = 4.0
-    source: str = "seed"  # "gemini" | "seed" | "generated"
+    tier: str = ""  # budget | mid | premium
+    source: str = "dataset"
 
 
 class BudgetLineItem(BaseModel):
@@ -200,7 +197,6 @@ class ItineraryDay(BaseModel):
     weather: Optional[DayWeather] = None
     items: list[ScheduledItem] = Field(default_factory=list)
     travel_leg: Optional[RouteLeg] = None
-    departure_leg: Optional[RouteLeg] = None
     overnight_hotel: Optional[Hotel] = None
 
 

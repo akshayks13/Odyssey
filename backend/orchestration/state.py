@@ -63,8 +63,8 @@ class TripState(TypedDict, total=False):
     # --- Streaming log (accumulates across the whole run) ---------------
     agent_messages: Annotated[list[str], operator.add]
 
-    # How the agent that just ran reached its answer: which tools the model called, which engine
-    # answered, which algorithms the code ran. The UI shows this; it is evidence, not plan data.
+    # How the agent that just ran reached its answer: the tools it called and the algorithms it ran.
+    # The UI shows these as chips; they are evidence, not plan data.
     agent_meta: dict
 
     # --- Score -------------------------------------------------------
