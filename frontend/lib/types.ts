@@ -11,29 +11,22 @@ export interface Destination {
   coordinates: Coordinates;
   preference_score: number;
   description: string;
-  tags: string[];
   weather_summary?: string | null;
-  weather_risk: boolean;
 }
 
 export interface RouteLeg {
   origin: string;
   destination: string;
   mode: "road" | "rail";
-  distance_km: number;
   duration_hours: number;
   cost_inr: number;
-  available: boolean;
   summary?: string | null;
   vehicle?: string | null;
-  source?: string | null;
-  reason?: string | null;
 }
 
 export interface Route {
   ordered_destinations: string[];
   legs: RouteLeg[];
-  total_distance_km: number;
   total_duration_hours: number;
   total_cost_inr: number;
   search_algorithm: string;
@@ -45,7 +38,6 @@ export interface Hotel {
   destination: string;
   price_per_night_inr: number;
   rating: number;
-  source: string;
 }
 
 export interface BudgetLineItem {
@@ -59,7 +51,6 @@ export interface BudgetBreakdown {
   food_inr: number;
   activities_inr: number;
   transport_inr: number;
-  misc_inr: number;
   total_inr: number;
   ceiling_inr: number;
   over_budget_by_inr: number;
@@ -134,10 +125,61 @@ export interface AgentMeta {
   note?: string;
 }
 
+/** One message an agent sent another (or the traveller): the protocol the team runs on. */
+export interface BusMessage {
+  id: number;
+  kind: string;
+  from: string;
+  to: string;
+  summary: string;
+}
+
+export interface RunStats {
+  agent_runs: number;
+  runs_by_agent: Record<string, number>;
+  messages: number;
+  message_counts: Record<string, number>;
+  field_checks: number;
+  iterations: number;
+}
+
+/** One strategy's score from POST /api/compare, measured against what really happened in the field. */
+export interface StrategyResult {
+  label: string;
+  planned: boolean;
+  valid: boolean;
+  value_ratio: number;
+  value_delivered: number;
+  value_planned: number;
+  sights_planned: number;
+  sights_done: number;
+  sights_lost: number;
+  lost_travel_days: number;
+  over_budget_pct: number;
+  agent_runs: number;
+  messages: number;
+  field_checks: number;
+  iterations: number;
+  wall_ms: number;
+}
+
+export interface CompareResponse {
+  request: string;
+  seed: number;
+  uncertainty: string;
+  reported: number;
+  strategies: Record<string, StrategyResult>;
+}
+
 export interface AgentStepEvent {
-  type: "init" | "step_start" | "step_complete" | "done" | "error";
+  type: "init" | "step_start" | "step_complete" | "message" | "done" | "error";
   thread_id?: string;
   agent?: string;
+  // a `message` event
+  id?: number;
+  kind?: string;
+  from?: string;
+  to?: string;
   message?: string;
   meta?: AgentMeta;
   data?: unknown;
@@ -155,9 +197,17 @@ export interface AgentStepEvent {
   reply?: string | null;
   summary?: string | null;
   reran_from?: string | null;
+  field_checks?: number;
+  messages?: BusMessage[];
+  stats?: RunStats;
+  strategy?: string;
+  seed?: number;
+  uncertainty?: string;
 }
 
 export const EDIT_AGENT = "edit_router";
+/** The sensor that checks a schedule against the field. It is not one of the six agents, so it only appears when it runs. */
+export const ENV_AGENT = "environment";
 
 export const AGENT_ORDER = [
   "trip_analyst",
@@ -170,6 +220,7 @@ export const AGENT_ORDER = [
 
 export const STEP_LABELS: Record<string, string> = {
   edit_router: "Your change",
+  environment: "Field check",
   trip_analyst: "Your request",
   destination_agent: "Destinations",
   mobility_agent: "Routes",

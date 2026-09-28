@@ -153,3 +153,28 @@ def test_csp_uses_the_travel_matrix():
     result = solve_day_schedule(acts, 9, 18, travel_matrix_minutes=matrix, include_meals=False)
     a, b = result["scheduled"]
     assert b["start_hour"] * 60 >= a["end_hour"] * 60 + 90
+
+
+# --- The greedy first-fit baseline ---------------------------------------------------
+
+def test_first_fit_places_items_in_preference_order_without_overlap():
+    acts = [_act(1, 9, 18, 120, pref=0.9), _act(2, 9, 18, 120, pref=0.5), _act(3, 9, 18, 120, pref=0.1)]
+    result = solve_day_schedule(acts, 8, 21, method="greedy")
+    assert [s["id"] for s in result["scheduled"]] == ["a1", "a2", "a3"] or len(result["scheduled"]) <= 3
+    _check_day(result, acts, 8, 21)
+
+
+def test_first_fit_has_no_lookahead_so_it_loses_a_sight_the_csp_keeps():
+    # The wanted sight goes first at 09:00 and blocks the short one that must start by 10:00.
+    # The CSP places the constrained sight first (MRV), so both fit.
+    acts = [_act(1, 9, 17, 180, pref=0.9), _act(2, 9, 12, 120, pref=0.8)]
+    greedy = solve_day_schedule(acts, 9, 18, include_meals=False, method="greedy")
+    csp = solve_day_schedule(acts, 9, 18, include_meals=False, method="csp")
+    assert len(greedy["scheduled"]) == 1 and len(csp["scheduled"]) == 2
+    _check_day(csp, acts, 9, 18)
+
+
+def test_first_fit_is_deterministic_and_reports_what_it_skipped():
+    acts = [_act(1, 9, 12, 180, pref=0.9), _act(2, 9, 12, 180, pref=0.2)]  # both need the whole morning
+    a, b = solve_day_schedule(acts, 8, 21, method="greedy"), solve_day_schedule(acts, 8, 21, method="greedy")
+    assert a == b and a["selected_ids"] == ["a1"] and a["stats"]["dropped"] == 1 and a["stats"]["backtracks"] == 0

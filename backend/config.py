@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 # --- Replanning ---------------------------------------------------------
-MAX_REPLAN_ITERATIONS = int(os.getenv("MAX_REPLAN_ITERATIONS", "3"))
+MAX_REPLAN_ITERATIONS = int(os.getenv("MAX_REPLAN_ITERATIONS", "5"))
 
 # --- Server ---------------------------------------------------------------
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")

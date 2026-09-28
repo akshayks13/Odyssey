@@ -7,7 +7,6 @@
       "aliases": ["cochin", "ernakulam", "fort kochi"],
       "coordinates": {"lat": 9.9312, "lng": 76.2673},
       "description": "Historic port city: Fort Kochi, spice markets, colonial streets and Kathakali.",
-      "tags": ["culture", "food", "shopping"],
       "profile": {"nature": 0.3, "adventure": 0.2, "food": 0.8, "nightlife": 0.6, "relaxation": 0.4, "culture": 0.9, "shopping": 0.7},
       "hill": false
     },
@@ -16,7 +15,6 @@
       "aliases": [],
       "coordinates": {"lat": 10.0889, "lng": 77.0595},
       "description": "Hill station with tea plantations, misty valleys and trekking trails.",
-      "tags": ["nature", "adventure", "relaxation"],
       "profile": {"nature": 0.95, "adventure": 0.75, "food": 0.4, "nightlife": 0.1, "relaxation": 0.7, "culture": 0.3, "shopping": 0.3},
       "hill": true
     },
@@ -25,7 +23,6 @@
       "aliases": ["periyar", "kumily"],
       "coordinates": {"lat": 9.6031, "lng": 77.1615},
       "description": "Periyar tiger reserve, spice plantations and bamboo rafting.",
-      "tags": ["nature", "wildlife", "adventure"],
       "profile": {"nature": 0.9, "adventure": 0.8, "food": 0.5, "nightlife": 0.1, "relaxation": 0.5, "culture": 0.5, "shopping": 0.4},
       "hill": true
     },
@@ -34,7 +31,6 @@
       "aliases": ["alappuzha", "allepey"],
       "coordinates": {"lat": 9.4981, "lng": 76.3388},
       "description": "Backwaters, houseboats and quiet canal villages.",
-      "tags": ["relaxation", "nature"],
       "profile": {"nature": 0.75, "adventure": 0.3, "food": 0.6, "nightlife": 0.2, "relaxation": 0.95, "culture": 0.5, "shopping": 0.2},
       "hill": false
     },
@@ -43,7 +39,6 @@
       "aliases": ["wagamon"],
       "coordinates": {"lat": 9.6865, "lng": 76.9053},
       "description": "Rolling meadows, pine forests and paragliding.",
-      "tags": ["nature", "adventure"],
       "profile": {"nature": 0.9, "adventure": 0.9, "food": 0.2, "nightlife": 0.05, "relaxation": 0.6, "culture": 0.3, "shopping": 0.1},
       "hill": true
     },
@@ -52,7 +47,6 @@
       "aliases": ["trivandrum", "thiruvananthapuram"],
       "coordinates": {"lat": 8.4004, "lng": 76.9787},
       "description": "Crescent beaches, Ayurveda and the capital's temples and museums nearby.",
-      "tags": ["relaxation", "culture", "food"],
       "profile": {"nature": 0.5, "adventure": 0.3, "food": 0.7, "nightlife": 0.5, "relaxation": 0.9, "culture": 0.7, "shopping": 0.4},
       "hill": false
     },
@@ -61,7 +55,6 @@
       "aliases": ["kalpetta"],
       "coordinates": {"lat": 11.6854, "lng": 76.1320},
       "description": "Forested highlands in the far north: caves, waterfalls and peak treks.",
-      "tags": ["nature", "adventure", "wildlife"],
       "profile": {"nature": 0.95, "adventure": 0.9, "food": 0.3, "nightlife": 0.05, "relaxation": 0.5, "culture": 0.5, "shopping": 0.1},
       "hill": true
     },
@@ -70,17 +63,9 @@
       "aliases": [],
       "coordinates": {"lat": 8.7379, "lng": 76.7163},
       "description": "Red cliffs above the sea, beach cafes, yoga and surfing.",
-      "tags": ["relaxation", "adventure", "nightlife"],
       "profile": {"nature": 0.7, "adventure": 0.6, "food": 0.7, "nightlife": 0.7, "relaxation": 0.9, "culture": 0.4, "shopping": 0.4},
       "hill": false
     }
-  ],
-  "junctions": [
-    {"name": "Thrissur", "coordinates": {"lat": 10.5276, "lng": 76.2144}},
-    {"name": "Kozhikode", "coordinates": {"lat": 11.2588, "lng": 75.7804}},
-    {"name": "Kottayam", "coordinates": {"lat": 9.5916, "lng": 76.5222}},
-    {"name": "Kollam", "coordinates": {"lat": 8.8932, "lng": 76.6141}},
-    {"name": "Thiruvananthapuram", "coordinates": {"lat": 8.5241, "lng": 76.9366}}
   ],
   "roads": [
     {"a": "Kochi", "b": "Thrissur", "km": 80, "hours": 2.0},
@@ -114,14 +99,14 @@
     "Kochi": [
       {"id": "kochi_fort", "name": "Fort Kochi Heritage Walk", "category": "culture", "duration_minutes": 150, "cost_inr": 0, "rating": 4.5, "opening_hour": 7, "closing_hour": 19, "coordinates": {"lat": 9.9658, "lng": 76.2421}},
       {"id": "kochi_nets", "name": "Chinese Fishing Nets", "category": "culture", "duration_minutes": 60, "cost_inr": 0, "rating": 4.3, "opening_hour": 6, "closing_hour": 19, "coordinates": {"lat": 9.9677, "lng": 76.2422}},
-      {"id": "kochi_palace", "name": "Mattancherry Palace Museum", "category": "culture", "indoor": true, "duration_minutes": 90, "cost_inr": 20, "rating": 4.3, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 9.9585, "lng": 76.2594}},
+      {"id": "kochi_palace", "name": "Mattancherry Palace Museum", "category": "culture", "duration_minutes": 90, "cost_inr": 20, "rating": 4.3, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 9.9585, "lng": 76.2594}},
       {"id": "kochi_market", "name": "Jew Town Spice Market", "category": "shopping", "duration_minutes": 90, "cost_inr": 300, "rating": 4.2, "opening_hour": 10, "closing_hour": 19, "coordinates": {"lat": 9.9573, "lng": 76.2599}},
-      {"id": "kochi_kathakali", "name": "Kathakali Dance Show", "category": "culture", "indoor": true, "duration_minutes": 120, "cost_inr": 400, "rating": 4.6, "opening_hour": 17, "closing_hour": 20, "coordinates": {"lat": 9.9644, "lng": 76.2446}},
-      {"id": "kochi_folklore", "name": "Kerala Folklore Museum", "category": "culture", "indoor": true, "duration_minutes": 90, "cost_inr": 200, "rating": 4.6, "opening_hour": 9, "closing_hour": 18, "coordinates": {"lat": 9.9345, "lng": 76.3120}},
+      {"id": "kochi_kathakali", "name": "Kathakali Dance Show", "category": "culture", "duration_minutes": 120, "cost_inr": 400, "rating": 4.6, "opening_hour": 17, "closing_hour": 20, "coordinates": {"lat": 9.9644, "lng": 76.2446}},
+      {"id": "kochi_folklore", "name": "Kerala Folklore Museum", "category": "culture", "duration_minutes": 90, "cost_inr": 200, "rating": 4.6, "opening_hour": 9, "closing_hour": 18, "coordinates": {"lat": 9.9345, "lng": 76.3120}},
       {"id": "kochi_marine", "name": "Marine Drive Sunset Walk", "category": "relaxation", "duration_minutes": 60, "cost_inr": 0, "rating": 4.2, "opening_hour": 16, "closing_hour": 21, "coordinates": {"lat": 9.9816, "lng": 76.2753}}
     ],
     "Munnar": [
-      {"id": "munnar_tea_museum", "name": "Tea Museum", "category": "culture", "indoor": true, "duration_minutes": 90, "cost_inr": 125, "rating": 4.3, "opening_hour": 9, "closing_hour": 17, "coordinates": {"lat": 10.0950, "lng": 77.0590}},
+      {"id": "munnar_tea_museum", "name": "Tea Museum", "category": "culture", "duration_minutes": 90, "cost_inr": 125, "rating": 4.3, "opening_hour": 9, "closing_hour": 17, "coordinates": {"lat": 10.0950, "lng": 77.0590}},
       {"id": "munnar_eravikulam", "name": "Eravikulam National Park", "category": "nature", "duration_minutes": 180, "cost_inr": 200, "rating": 4.6, "opening_hour": 8, "closing_hour": 16, "coordinates": {"lat": 10.1500, "lng": 77.0600}},
       {"id": "munnar_mattupetty", "name": "Mattupetty Dam and Echo Point", "category": "nature", "duration_minutes": 120, "cost_inr": 50, "rating": 4.2, "opening_hour": 9, "closing_hour": 17, "coordinates": {"lat": 10.1060, "lng": 77.1230}},
       {"id": "munnar_top_station", "name": "Top Station Viewpoint", "category": "nature", "duration_minutes": 120, "cost_inr": 0, "rating": 4.4, "opening_hour": 7, "closing_hour": 18, "coordinates": {"lat": 10.1260, "lng": 77.2450}},
@@ -132,7 +117,7 @@
       {"id": "thekkady_boating", "name": "Periyar Lake Boating", "category": "nature", "duration_minutes": 120, "cost_inr": 385, "rating": 4.3, "opening_hour": 7, "closing_hour": 16, "coordinates": {"lat": 9.5650, "lng": 77.1670}},
       {"id": "thekkady_spice", "name": "Spice Plantation Tour", "category": "food", "duration_minutes": 120, "cost_inr": 300, "rating": 4.4, "opening_hour": 8, "closing_hour": 17, "coordinates": {"lat": 9.6150, "lng": 77.1500}},
       {"id": "thekkady_rafting", "name": "Bamboo Rafting", "category": "adventure", "duration_minutes": 240, "cost_inr": 2000, "rating": 4.6, "opening_hour": 8, "closing_hour": 14, "coordinates": {"lat": 9.5700, "lng": 77.1750}},
-      {"id": "thekkady_kalari", "name": "Kalaripayattu Martial Arts Show", "category": "culture", "indoor": true, "duration_minutes": 60, "cost_inr": 300, "rating": 4.5, "opening_hour": 17, "closing_hour": 20, "coordinates": {"lat": 9.6050, "lng": 77.1620}},
+      {"id": "thekkady_kalari", "name": "Kalaripayattu Martial Arts Show", "category": "culture", "duration_minutes": 60, "cost_inr": 300, "rating": 4.5, "opening_hour": 17, "closing_hour": 20, "coordinates": {"lat": 9.6050, "lng": 77.1620}},
       {"id": "thekkady_walk", "name": "Periyar Nature Walk", "category": "nature", "duration_minutes": 180, "cost_inr": 400, "rating": 4.5, "opening_hour": 7, "closing_hour": 13, "coordinates": {"lat": 9.5750, "lng": 77.1700}},
       {"id": "thekkady_market", "name": "Kumily Spice Market", "category": "shopping", "duration_minutes": 60, "cost_inr": 200, "rating": 4.0, "opening_hour": 10, "closing_hour": 20, "coordinates": {"lat": 9.6070, "lng": 77.1640}}
     ],
@@ -140,7 +125,7 @@
       {"id": "alleppey_houseboat", "name": "Houseboat Day Cruise", "category": "relaxation", "duration_minutes": 240, "cost_inr": 1500, "rating": 4.7, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 9.4950, "lng": 76.3450}},
       {"id": "alleppey_canoe", "name": "Village Canoe Ride", "category": "nature", "duration_minutes": 150, "cost_inr": 600, "rating": 4.6, "opening_hour": 7, "closing_hour": 17, "coordinates": {"lat": 9.5100, "lng": 76.3600}},
       {"id": "alleppey_beach", "name": "Alleppey Beach Sunset", "category": "relaxation", "duration_minutes": 90, "cost_inr": 0, "rating": 4.1, "opening_hour": 15, "closing_hour": 20, "coordinates": {"lat": 9.4950, "lng": 76.3180}},
-      {"id": "alleppey_museum", "name": "Revi Karunakaran Museum", "category": "culture", "indoor": true, "duration_minutes": 90, "cost_inr": 250, "rating": 4.3, "opening_hour": 9, "closing_hour": 17, "coordinates": {"lat": 9.5035, "lng": 76.3355}},
+      {"id": "alleppey_museum", "name": "Revi Karunakaran Museum", "category": "culture", "duration_minutes": 90, "cost_inr": 250, "rating": 4.3, "opening_hour": 9, "closing_hour": 17, "coordinates": {"lat": 9.5035, "lng": 76.3355}},
       {"id": "alleppey_marari", "name": "Marari Beach", "category": "relaxation", "duration_minutes": 120, "cost_inr": 0, "rating": 4.5, "opening_hour": 8, "closing_hour": 18, "coordinates": {"lat": 9.6030, "lng": 76.2980}}
     ],
     "Vagamon": [
@@ -153,10 +138,10 @@
     "Kovalam": [
       {"id": "kovalam_beach", "name": "Lighthouse Beach", "category": "relaxation", "duration_minutes": 120, "cost_inr": 0, "rating": 4.4, "opening_hour": 6, "closing_hour": 19, "coordinates": {"lat": 8.3930, "lng": 76.9780}},
       {"id": "kovalam_lighthouse", "name": "Vizhinjam Lighthouse", "category": "culture", "duration_minutes": 60, "cost_inr": 20, "rating": 4.2, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 8.3887, "lng": 76.9780}},
-      {"id": "kovalam_ayurveda", "name": "Ayurvedic Massage", "category": "relaxation", "indoor": true, "duration_minutes": 90, "cost_inr": 1500, "rating": 4.5, "opening_hour": 9, "closing_hour": 19, "coordinates": {"lat": 8.4000, "lng": 76.9760}},
-      {"id": "kovalam_temple", "name": "Padmanabhaswamy Temple", "category": "culture", "indoor": true, "duration_minutes": 120, "cost_inr": 0, "rating": 4.7, "opening_hour": 8, "closing_hour": 12, "coordinates": {"lat": 8.4828, "lng": 76.9436}},
-      {"id": "kovalam_napier", "name": "Napier Museum", "category": "culture", "indoor": true, "duration_minutes": 90, "cost_inr": 20, "rating": 4.3, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 8.5089, "lng": 76.9553}},
-      {"id": "kovalam_cooking", "name": "Kerala Cooking Class", "category": "food", "indoor": true, "duration_minutes": 150, "cost_inr": 1200, "rating": 4.6, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 8.4020, "lng": 76.9800}}
+      {"id": "kovalam_ayurveda", "name": "Ayurvedic Massage", "category": "relaxation", "duration_minutes": 90, "cost_inr": 1500, "rating": 4.5, "opening_hour": 9, "closing_hour": 19, "coordinates": {"lat": 8.4000, "lng": 76.9760}},
+      {"id": "kovalam_temple", "name": "Padmanabhaswamy Temple", "category": "culture", "duration_minutes": 120, "cost_inr": 0, "rating": 4.7, "opening_hour": 8, "closing_hour": 12, "coordinates": {"lat": 8.4828, "lng": 76.9436}},
+      {"id": "kovalam_napier", "name": "Napier Museum", "category": "culture", "duration_minutes": 90, "cost_inr": 20, "rating": 4.3, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 8.5089, "lng": 76.9553}},
+      {"id": "kovalam_cooking", "name": "Kerala Cooking Class", "category": "food", "duration_minutes": 150, "cost_inr": 1200, "rating": 4.6, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 8.4020, "lng": 76.9800}}
     ],
     "Wayanad": [
       {"id": "wayanad_edakkal", "name": "Edakkal Caves", "category": "adventure", "duration_minutes": 150, "cost_inr": 50, "rating": 4.5, "opening_hour": 9, "closing_hour": 16, "coordinates": {"lat": 11.6263, "lng": 76.2349}},
@@ -164,13 +149,13 @@
       {"id": "wayanad_banasura", "name": "Banasura Sagar Dam", "category": "nature", "duration_minutes": 120, "cost_inr": 50, "rating": 4.3, "opening_hour": 9, "closing_hour": 17, "coordinates": {"lat": 11.6710, "lng": 75.9560}},
       {"id": "wayanad_chembra", "name": "Chembra Peak Trek", "category": "adventure", "duration_minutes": 300, "cost_inr": 750, "rating": 4.6, "opening_hour": 7, "closing_hour": 14, "coordinates": {"lat": 11.5143, "lng": 76.0872}},
       {"id": "wayanad_muthanga", "name": "Muthanga Wildlife Safari", "category": "nature", "duration_minutes": 120, "cost_inr": 600, "rating": 4.2, "opening_hour": 7, "closing_hour": 11, "coordinates": {"lat": 11.6700, "lng": 76.3750}},
-      {"id": "wayanad_museum", "name": "Wayanad Heritage Museum", "category": "culture", "indoor": true, "duration_minutes": 60, "cost_inr": 20, "rating": 4.0, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 11.6500, "lng": 76.2600}}
+      {"id": "wayanad_museum", "name": "Wayanad Heritage Museum", "category": "culture", "duration_minutes": 60, "cost_inr": 20, "rating": 4.0, "opening_hour": 10, "closing_hour": 17, "coordinates": {"lat": 11.6500, "lng": 76.2600}}
     ],
     "Varkala": [
       {"id": "varkala_cliff", "name": "Varkala Cliff Walk", "category": "nature", "duration_minutes": 120, "cost_inr": 0, "rating": 4.6, "opening_hour": 6, "closing_hour": 20, "coordinates": {"lat": 8.7340, "lng": 76.7040}},
       {"id": "varkala_papanasam", "name": "Papanasam Beach", "category": "relaxation", "duration_minutes": 120, "cost_inr": 0, "rating": 4.5, "opening_hour": 7, "closing_hour": 19, "coordinates": {"lat": 8.7320, "lng": 76.7030}},
-      {"id": "varkala_temple", "name": "Janardhana Swamy Temple", "category": "culture", "indoor": true, "duration_minutes": 60, "cost_inr": 0, "rating": 4.3, "opening_hour": 5, "closing_hour": 12, "coordinates": {"lat": 8.7330, "lng": 76.7100}},
-      {"id": "varkala_yoga", "name": "Sunrise Yoga Session", "category": "relaxation", "indoor": true, "duration_minutes": 90, "cost_inr": 600, "rating": 4.6, "opening_hour": 6, "closing_hour": 9, "coordinates": {"lat": 8.7360, "lng": 76.7060}},
+      {"id": "varkala_temple", "name": "Janardhana Swamy Temple", "category": "culture", "duration_minutes": 60, "cost_inr": 0, "rating": 4.3, "opening_hour": 5, "closing_hour": 12, "coordinates": {"lat": 8.7330, "lng": 76.7100}},
+      {"id": "varkala_yoga", "name": "Sunrise Yoga Session", "category": "relaxation", "duration_minutes": 90, "cost_inr": 600, "rating": 4.6, "opening_hour": 6, "closing_hour": 9, "coordinates": {"lat": 8.7360, "lng": 76.7060}},
       {"id": "varkala_surf", "name": "Surfing Lesson", "category": "adventure", "duration_minutes": 120, "cost_inr": 2000, "rating": 4.5, "opening_hour": 7, "closing_hour": 11, "coordinates": {"lat": 8.7300, "lng": 76.7020}},
       {"id": "varkala_kappil", "name": "Kappil Lake Kayaking", "category": "adventure", "duration_minutes": 90, "cost_inr": 800, "rating": 4.4, "opening_hour": 8, "closing_hour": 17, "coordinates": {"lat": 8.7830, "lng": 76.6800}}
     ]

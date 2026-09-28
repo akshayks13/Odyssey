@@ -49,7 +49,7 @@ def reconcile_activity_costs(budget, itinerary, activity_costs: dict[str, float]
 
     per_person = sum(activity_costs.get(i.activity_id, 0.0) for d in itinerary.days for i in d.items if i.kind == "activity")
     activities_total = round(per_person * max(travellers, 1), 2)
-    total = round(budget.hotels_inr + budget.food_inr + budget.transport_inr + budget.misc_inr + activities_total, 2)
+    total = round(budget.hotels_inr + budget.food_inr + budget.transport_inr + activities_total, 2)
     items = [li for li in budget.line_items if li.category != "activities"]
     items.insert(min(2, len(items)), BudgetLineItem(category="activities", amount_inr=activities_total))
     return budget.model_copy(

@@ -19,6 +19,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CITY_SPEED_KMH = 25.0  # getting around between sights inside a city
 HOP_OVERHEAD_MIN = 10  # parking, walking in
 RAINY_CHANCE = 60  # % chance of rain from which a day counts as rainy
+OUTDOOR_CATEGORIES = {"nature", "adventure"}  # the sights that rain spoils (boating, treks, viewpoints)
 
 
 @lru_cache(maxsize=None)

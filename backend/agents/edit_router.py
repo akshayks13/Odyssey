@@ -21,13 +21,11 @@ Anything else gets a short reply listing what it can change; the plan is left al
 from __future__ import annotations
 
 import re
-from datetime import date
 
-from agents.common import trace
+from agents.base import Agent, Post, Result
 from agents.trip_analyst import THEME_WORDS, parse_budget, parse_days, parse_travellers
-from algorithms.planning import PACE_CAPS
+from core.messages import TRAVELLER, Message, MsgType
 from models.schemas import Disruption, DisruptionType, EditDirective, EditLocks, TripSpec
-from orchestration.state import TripState
 from tools import world
 
 # Earliest agent first. Re-running from an earlier one is always safe.
@@ -44,11 +42,11 @@ _REMOVE_WORDS = r"(remove|drop|skip|avoid|exclude|without|cancel|no more|not)"
 _ADD_WORDS = r"(add|include|also visit|also go to|visit|extend to)"
 
 
-def _selected_names(state: TripState) -> list[str]:
+def _selected_names(state: dict) -> list[str]:
     return [d.name for d in state.get("selected_destinations", [])]
 
 
-def _all_activity_names(state: TripState) -> list[str]:
+def _all_activity_names(state: dict) -> list[str]:
     return [a.name for acts in (state.get("candidate_activities") or {}).values() for a in acts]
 
 
@@ -86,7 +84,7 @@ def _sight_after(text: str, verb: str, names: list[str]) -> list[str]:
     return out
 
 
-def _answer(text: str, state: TripState) -> str:
+def _answer(text: str, state: dict) -> str:
     itinerary = state.get("final_itinerary") or state.get("draft_itinerary")
     budget = state.get("budget_breakdown")
     route = state.get("route")
@@ -112,13 +110,13 @@ def _answer(text: str, state: TripState) -> str:
     return f"Your {len(itinerary.days) if itinerary else 0}-day plan covers {cities}. {HELP}"
 
 
-def parse_edit(message: str, state: TripState) -> dict:
-    """The change a message asks for, in the shape the rest of the router applies ({} = not understood)."""
+def parse_edit(message: str, state: dict) -> EditDirective | None:
+    """The change a message asks for, or None when it is not understood."""
     text = message.lower().replace("’", "'").strip()
     spec: TripSpec = state["trip_spec"]
     region = spec.destination_region
     if text.endswith("?") or text.startswith(_QUESTION_START):
-        return {"intent": "answer", "route_to": "answer", "reply": _answer(text, state), "summary": "Answered a question."}
+        return EditDirective(intent="answer", reply=_answer(text, state), summary="Answered a question.")
 
     activities = _all_activity_names(state)
     patch: dict = {}
@@ -134,10 +132,10 @@ def parse_edit(message: str, state: TripState) -> dict:
     ):
         if re.search(pattern, text):
             for c in world.cities_named_in(region, text) or _selected_names(state)[:1]:
-                events.append({"type": kind, "target": c, "description": f"Reported by you: {label}"})
+                events.append(Disruption(type=DisruptionType(kind), target=c, description=f"Reported by you: {label}"))
                 said.append(f"{label} at {c}")
     if events:
-        return {"intent": "modify", "route_to": "", "disruptions": events, "summary": "; ".join(said)}
+        return EditDirective(summary="; ".join(said), disruptions=events)
 
     # Cities: swap / add / remove.
     named = world.cities_named_in(region, text)
@@ -238,68 +236,13 @@ def parse_edit(message: str, state: TripState) -> dict:
 
     if not said:
         if pin or re.search(rf"\b{_REMOVE_WORDS}\b", text):
-            return {"intent": "answer", "route_to": "answer", "summary": "Nothing matched.",
-                    "reply": "I couldn't find that city or sight in your plan. Cities: " + ", ".join(_selected_names(state)) + "."}
-        return {}
-    return {
-        "intent": "modify",
-        "route_to": "",
-        "summary": "; ".join(said).capitalize() + ".",
-        "spec_patch": patch,
-        "add_cities": add,
-        "remove_cities": remove,
-        "lock_updates": locks,
-    }
-
-
-def _num(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
+            return EditDirective(intent="answer", summary="Nothing matched.",
+                                 reply="I couldn't find that city or sight in your plan. Cities: " + ", ".join(_selected_names(state)) + ".")
         return None
+    return EditDirective(summary="; ".join(said).capitalize() + ".", spec_patch=patch, add_cities=add, remove_cities=remove, lock_updates=EditLocks(**locks))
 
 
-def _directive_from_json(data: dict) -> EditDirective | None:
-    if data.get("intent") not in {"modify", "answer"}:
-        return None
-    raw = data.get("lock_updates") or {}
-    locks = EditLocks(
-        preferred_mode=raw.get("preferred_mode") if raw.get("preferred_mode") in {"road", "rail"} else None,
-        hotel_prefs={str(k).lower(): str(v) for k, v in (raw.get("hotel_prefs") or {}).items() if v},
-        excluded_activities=[str(x) for x in raw.get("excluded_activities") or [] if x],
-        pinned_activities={str(k): int(_num(v)) for k, v in (raw.get("pinned_activities") or {}).items() if _num(v) is not None},
-        free_days=[int(_num(x)) for x in raw.get("free_days") or [] if _num(x) is not None],
-        light_days=[int(_num(x)) for x in raw.get("light_days") or [] if _num(x) is not None],
-        pace=raw.get("pace") if raw.get("pace") in PACE_CAPS else None,
-        day_start_hour=_num(raw.get("day_start_hour")),
-    )
-    disruptions = []
-    for row in data.get("disruptions") or []:
-        try:
-            disruptions.append(
-                Disruption(
-                    type=DisruptionType(str(row.get("type"))),
-                    target=str(row.get("target") or "trip"),
-                    description=str(row.get("description") or "Reported by traveller"),
-                    new_budget_inr=_num(row.get("new_budget_inr")),
-                )
-            )
-        except (ValueError, TypeError):
-            continue
-    return EditDirective(
-        intent=data["intent"],
-        summary=str(data.get("summary") or "")[:200],
-        reply=str(data["reply"]) if data.get("reply") else None,
-        spec_patch=dict(data.get("spec_patch") or {}),
-        add_cities=[str(x) for x in data.get("add_cities") or [] if x],
-        remove_cities=[str(x) for x in data.get("remove_cities") or [] if x],
-        lock_updates=locks,
-        disruptions=disruptions,
-        entry=str(data.get("route_to") or ""),
-    )
-
-
-def _sanitize(d: EditDirective, state: TripState) -> tuple[EditDirective, list[str]]:
+def _sanitize(d: EditDirective, state: dict) -> tuple[EditDirective, list[str]]:
     """Drop names that aren't in the plan. Returns the directive and the names it couldn't find."""
     spec: TripSpec = state["trip_spec"]
     selected, activities = _selected_names(state), _all_activity_names(state)
@@ -319,7 +262,7 @@ def _sanitize(d: EditDirective, state: TripState) -> tuple[EditDirective, list[s
     d.add_cities = [k for k in known if k and k not in selected]
     lu.excluded_activities = real(lu.excluded_activities, activities)
 
-    horizon = max(spec.duration_days, int(_num(d.spec_patch.get("duration_days")) or 0))
+    horizon = max(spec.duration_days, d.spec_patch.get("duration_days", 0))
     lu.pinned_activities = {a: day for n, day in lu.pinned_activities.items() if (a := _match(n, activities)) and 1 <= day <= horizon}
     lu.free_days = sorted({x for x in lu.free_days if 1 <= x <= horizon})
     lu.light_days = sorted({x for x in lu.light_days if 1 <= x <= horizon})
@@ -342,24 +285,11 @@ def _sanitize(d: EditDirective, state: TripState) -> tuple[EditDirective, list[s
             missing.append(x.target)
     d.disruptions = kept
 
-    patch, clean = d.spec_patch, {}
-    if (n := _num(patch.get("duration_days"))) and 1 <= int(n) <= 30:
-        clean["duration_days"] = int(n)
-    if (n := _num(patch.get("budget_inr"))) and n > 0:
-        clean["budget_inr"] = float(n)
-    if (n := _num(patch.get("travellers"))) and int(n) >= 1:
-        clean["travellers"] = int(n)
-    try:
-        if patch.get("start_date") and date.fromisoformat(str(patch["start_date"])) >= date.today():
-            clean["start_date"] = str(patch["start_date"])
-    except ValueError:
-        pass
-    if patch.get("pace") in PACE_CAPS:
-        lu.pace = lu.pace or patch["pace"]
-    weights = {k: round(min(1.0, max(0.0, float(v))), 2) for k, v in (patch.get("preferences") or {}).items() if k in spec.preferences.as_dict() and _num(v) is not None}
-    if weights:
-        clean["preferences"] = weights
-    d.spec_patch = clean
+    patch = d.spec_patch  # what the traveller typed, kept only if it is sensible
+    if not 1 <= patch.get("duration_days", 1) <= 30:
+        del patch["duration_days"]
+    if patch.get("travellers", 1) < 1:
+        del patch["travellers"]
     d.summary = d.summary or "Updated your plan."
     return d, list(dict.fromkeys(missing))
 
@@ -377,7 +307,7 @@ def _merge_locks(old: EditLocks, new: EditLocks) -> EditLocks:
     return merged
 
 
-def _apply(d: EditDirective, state: TripState) -> tuple[TripSpec, EditLocks, list[Disruption], int]:
+def _apply(d: EditDirective, state: dict) -> tuple[TripSpec, EditLocks, list[Disruption], int]:
     """Apply the change to the spec and locks. Also returns the earliest agent (index in ENTRY_ORDER)
     whose inputs changed, or -1 if nothing did."""
     spec: TripSpec = state["trip_spec"].model_copy(deep=True)
@@ -393,11 +323,11 @@ def _apply(d: EditDirective, state: TripState) -> tuple[TripSpec, EditLocks, lis
         levels.append(0)
     # A longer trip needs more sights to fill it (and may take another city), a shorter one fewer, so the
     # length goes all the way back to Destination. Budget and group size do not change what there is to see.
-    for field, level in (("duration_days", 0), ("budget_inr", 2), ("travellers", 1), ("start_date", 1)):
+    for field, level in (("duration_days", 0), ("budget_inr", 2), ("travellers", 1)):
         if field in patch and patch[field] != getattr(spec, field):
             setattr(spec, field, patch[field])
             levels.append(level)
-    spec.needs_clarification = [n for n in spec.needs_clarification if not any(n.startswith(k) and f in patch for k, f in (("duration", "duration_days"), ("budget", "budget_inr"), ("travellers", "travellers"), ("start_date", "start_date")))]
+    spec.needs_clarification = [n for n in spec.needs_clarification if not any(n.startswith(k) and f in patch for k, f in (("duration", "duration_days"), ("budget", "budget_inr"), ("travellers", "travellers")))]
 
     if d.add_cities or d.remove_cities:
         pinned = [c for c in (locks.pinned_cities or selected) if c not in d.remove_cities]
@@ -413,8 +343,6 @@ def _apply(d: EditDirective, state: TripState) -> tuple[TripSpec, EditLocks, lis
         levels.append(2)
     if lu.excluded_activities or lu.pinned_activities or lu.free_days or lu.light_days or lu.pace or lu.day_start_hour is not None:
         levels.append(3)
-    if "pace" in patch:
-        spec.constraints = spec.constraints.model_copy(update={"pace": patch["pace"]})
 
     disruptions = list(state.get("disruptions", [])) + d.disruptions
     if d.disruptions:
@@ -422,23 +350,26 @@ def _apply(d: EditDirective, state: TripState) -> tuple[TripSpec, EditLocks, lis
     return spec, locks, disruptions, (min(levels) if levels else -1)
 
 
-def edit_router_node(state: TripState) -> dict:
-    message = (state.get("edit_request") or "").strip()[:1000]
-    if not message or state.get("trip_spec") is None:
-        return {"edit_request": None, "assistant_reply": "There's no plan yet to edit — describe a trip first."}
+def interpret(message: str, state: dict) -> Result:
+    """What a typed change means, and where the pipeline should re-enter."""
+    message = message.strip()[:1000]
+    algorithms = ["keyword / pattern rules"]
+    spec = state.get("trip_spec")
+    if not message or spec is None or not spec.destination_region:  # no plan yet, or the request was only a question
+        reply = "There's no plan yet to edit — describe a trip first."
+        return Result(updates={"assistant_reply": reply}, posts=[Post(MsgType.ANSWER, TRAVELLER, reply)], message=f"Edit Router: {reply}", algorithms=algorithms)
 
-    def answer(directive: EditDirective, note: str) -> dict:
+    def answer(directive: EditDirective, note: str) -> Result:
         directive.intent, directive.entry = "answer", "answer"
-        return {
-            "edit_request": None,
-            "edit_directive": directive,
-            "assistant_reply": directive.reply,
-            "agent_meta": trace(algorithms=["keyword / pattern rules"], note="plan unchanged"),
-            "agent_messages": [f"Edit Router: {note}"],
-        }
+        return Result(
+            updates={"edit_directive": directive, "assistant_reply": directive.reply},
+            posts=[Post(MsgType.ANSWER, TRAVELLER, (directive.reply or note)[:110])],
+            message=f"Edit Router: {note}",
+            algorithms=algorithms,
+            note="plan unchanged",
+        )
 
-    parsed = parse_edit(message, state)
-    directive = _directive_from_json(parsed) if parsed else None
+    directive = parse_edit(message, state)
     if directive is None:
         return answer(EditDirective(reply=f"I didn't recognise a change in that. {HELP}"), "no change recognised — plan unchanged.")
 
@@ -455,16 +386,37 @@ def edit_router_node(state: TripState) -> dict:
     entry = ENTRY_ORDER[floor]  # the earliest agent whose inputs changed
     directive.entry = entry
     found = f" (couldn't find {', '.join(missing)})" if missing else ""
-    return {
-        "trip_spec": spec,
-        "edit_locks": locks,
-        "edit_directive": directive,
-        "disruptions": disruptions,
-        "iteration_count": 0,
-        "replan_directives": [],
-        "final_itinerary": None,
-        "edit_request": None,
-        "assistant_reply": None,
-        "agent_meta": trace(algorithms=["keyword / pattern rules"], note=f"re-running from {entry.replace('_', ' ')}"),
-        "agent_messages": [f"Edit Router: {directive.summary}{found} → re-running from {entry.replace('_', ' ')}."],
+    return Result(
+        updates={
+            "trip_spec": spec,
+            "edit_locks": locks,
+            "edit_directive": directive,
+            "disruptions": disruptions,
+            "iteration_count": 0,
+            "replan_directives": [],
+            "final_itinerary": None,
+            "assistant_reply": None,
+        },
+        posts=[Post(MsgType.RERUN, entry, directive.summary[:110])],
+        message=f"Edit Router: {directive.summary}{found} → re-running from {entry.replace('_', ' ')}.",
+        algorithms=algorithms,
+        note=f"re-running from {entry.replace('_', ' ')}",
+    )
+
+
+class EditRouter(Agent):
+    name = "edit_router"
+    label = "Edit Router"
+    role = "Front door for changes: reads a typed change and starts the pipeline again at the earliest agent it affects"
+    architecture = "simple reflex (condition-action rules on the text)"
+    peas = {
+        "performance": "Every change understood and stored as a standing choice; the pipeline re-entered no later than the earliest agent whose inputs changed; questions answered without touching the plan",
+        "environment": "The current plan, the traveller's standing choices, and one typed sentence",
+        "actuators": "Update the trip spec and the edit locks; send RERUN to one agent, or ANSWER to the traveller",
+        "sensors": "The plan (itinerary, budget, route, cities, sights) and the EDIT message",
     }
+    reads = ("trip_spec", "edit_locks", "selected_destinations", "candidate_activities", "disruptions", "final_itinerary", "draft_itinerary", "budget_breakdown", "route")
+    writes = ("trip_spec", "edit_locks", "edit_directive", "disruptions", "iteration_count", "replan_directives", "final_itinerary", "assistant_reply")
+
+    def handle(self, msg: Message, view: dict) -> Result:
+        return interpret(msg.payload.get("text", ""), view)

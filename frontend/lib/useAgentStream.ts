@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState, useTransition } from "react";
 import { DisruptPayload, postJson, withTimeout } from "./api";
-import { AGENT_ORDER, AgentMeta, AgentStatus, AgentStepEvent, EDIT_AGENT } from "./types";
+import { AGENT_ORDER, AgentMeta, AgentStatus, AgentStepEvent, BusMessage, EDIT_AGENT, ENV_AGENT } from "./types";
 
 // Planning is offline and takes well under a second; this is only a backstop against a dead connection.
 const STREAM_TIMEOUT_MS = 2 * 60_000;
@@ -10,13 +10,15 @@ const STREAM_TIMEOUT_MS = 2 * 60_000;
 export interface AgentStreamState {
   statuses: Record<string, AgentStatus>;
   messages: { agent: string; message: string; meta?: AgentMeta }[];
+  /** Every message the agents send each other during the current run, as it happens. */
+  busMessages: BusMessage[];
   latest: AgentStepEvent | null;
   isStreaming: boolean;
   error: string | null;
 }
 
 const statusesFor = (status: AgentStatus): Record<string, AgentStatus> =>
-  Object.fromEntries([...AGENT_ORDER, EDIT_AGENT].map((a) => [a, status])) as Record<string, AgentStatus>;
+  Object.fromEntries([...AGENT_ORDER, EDIT_AGENT, ENV_AGENT].map((a) => [a, status])) as Record<string, AgentStatus>;
 
 const initialStatuses = (): Record<string, AgentStatus> => statusesFor("pending");
 
@@ -28,6 +30,7 @@ export function useAgentStream() {
   const [state, setState] = useState<AgentStreamState>({
     statuses: initialStatuses(),
     messages: [],
+    busMessages: [],
     latest: null,
     isStreaming: false,
     error: null,
@@ -71,6 +74,10 @@ export function useAgentStream() {
 
         startTransition(() => {
           setState((prev) => {
+            if (event.type === "message") {
+              const sent: BusMessage = { id: event.id ?? 0, kind: event.kind ?? "", from: event.from ?? "", to: event.to ?? "", summary: event.summary ?? "" };
+              return { ...prev, busMessages: [...prev.busMessages, sent] };
+            }
             const next: AgentStreamState = { ...prev, latest: event };
 
             if (event.type === "step_start" && event.agent) {
@@ -118,6 +125,7 @@ export function useAgentStream() {
       setState((prev) => ({
         statuses: initial,
         messages: [],
+        busMessages: [],
         latest: prev.latest,
         isStreaming: true,
         error: null,
@@ -145,10 +153,10 @@ export function useAgentStream() {
   );
 
   const startPlan = useCallback(
-    (message: string, threadId: string) =>
+    (message: string, threadId: string, options: { uncertainty?: string } = {}) =>
       run(
         threadId,
-        (signal) => postJson("/api/plan", { message, thread_id: threadId }, signal),
+        (signal) => postJson("/api/plan", { message, thread_id: threadId, ...options }, signal),
         { ...initialStatuses(), trip_analyst: "running" }
       ),
     [run]

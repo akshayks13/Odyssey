@@ -1,0 +1,2 @@
+-r requirements.txt
+matplotlib==3.11.2  # the experiment charts (the tables need nothing extra)

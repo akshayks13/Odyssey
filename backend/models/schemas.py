@@ -28,7 +28,7 @@ class PreferenceWeights(BaseModel):
 
 class TripConstraints(BaseModel):
     max_daily_travel_hours: float = 4.0
-    max_destinations: int = 4
+    max_destinations: int = 6
     pace: str = "moderate"  # relaxed | moderate | packed
 
 
@@ -68,8 +68,6 @@ class Activity(BaseModel):
     closing_hour: int = 18
     preference_score: float = 0.5
     coordinates: Optional[Coordinates] = None
-    is_closed: bool = False  # set true by disruption injection
-    source: str = "dataset"
 
 
 class Destination(BaseModel):
@@ -78,9 +76,7 @@ class Destination(BaseModel):
     coordinates: Coordinates
     preference_score: float = 0.5
     description: str = ""
-    tags: list[str] = Field(default_factory=list)
     weather_summary: Optional[str] = None
-    weather_risk: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -96,20 +92,15 @@ class RouteLeg(BaseModel):
     origin: str
     destination: str
     mode: TransportMode = TransportMode.ROAD
-    distance_km: float = 0.0
     duration_hours: float = 0.0
     cost_inr: float = 0.0
-    available: bool = True
     summary: Optional[str] = None
     vehicle: Optional[str] = None  # for a road hop: own_car, taxi, tempo_traveller or bus
-    source: Optional[str] = None
-    reason: Optional[str] = None
 
 
 class Route(BaseModel):
     ordered_destinations: list[str]
     legs: list[RouteLeg] = Field(default_factory=list)
-    total_distance_km: float = 0.0
     total_duration_hours: float = 0.0
     total_cost_inr: float = 0.0
     search_algorithm: str = "weighted_astar"
@@ -126,7 +117,6 @@ class Hotel(BaseModel):
     price_per_night_inr: float
     rating: float = 4.0
     tier: str = ""  # budget | mid | premium
-    source: str = "dataset"
 
 
 class BudgetLineItem(BaseModel):
@@ -140,7 +130,6 @@ class BudgetBreakdown(BaseModel):
     food_inr: float = 0.0
     activities_inr: float = 0.0
     transport_inr: float = 0.0
-    misc_inr: float = 0.0
     total_inr: float = 0.0
     ceiling_inr: float = 0.0
     over_budget_by_inr: float = 0.0
@@ -185,7 +174,7 @@ class DayWeather(BaseModel):
     rain_mm: float = 0.0
     rain_chance: Optional[int] = None
     rainy: bool = False
-    source: str = "forecast"  # forecast | last year
+    source: str = "monthly average"  # monthly average (the agents' belief) | field report (what really happened)
 
 
 class ItineraryDay(BaseModel):
@@ -218,7 +207,7 @@ class IssueSeverity(str, Enum):
 
 
 class ValidationIssue(BaseModel):
-    type: str  # BUDGET | SCHEDULE_CONFLICT | WEATHER | CLOSURE | TRANSPORT | TRAVEL_OVERLOAD
+    type: str  # BUDGET | BUDGET_CUT | SCHEDULE_CONFLICT | WEATHER | CLOSURE | TRANSPORT | TRAVEL_OVERLOAD | LEISURE_DAY | ALL_TRAVEL | HEAVY_RAIN | SIGHT_CLOSED
     day: Optional[int] = None
     severity: IssueSeverity = IssueSeverity.MEDIUM
     message: str = ""
@@ -228,7 +217,7 @@ class ValidationIssue(BaseModel):
 
 class ValidationReport(BaseModel):
     valid: bool = True
-    issues: list[ValidationIssue] = Field(default_factory=list)  # blocking; drive replans
+    issues: list[ValidationIssue] = Field(default_factory=list)  # everything found; only issues above LOW make the plan invalid
     score: float = 0.0
 
 
@@ -260,7 +249,32 @@ class Disruption(BaseModel):
     target: str  # destination or activity name affected
     description: str
     day: Optional[int] = None
+    date: Optional[str] = None  # ISO date, when the event is tied to one day (a field report); None = the whole trip
     new_budget_inr: Optional[float] = None
+
+
+class ObservedFacts(BaseModel):
+    """What the team has actually found out about the world, as opposed to what it expects.
+
+    The agents plan on averages (a month's typical weather). The environment only tells them what is
+    real for the days, sights and journeys they ask about, so this grows as plans are checked.
+    Keys are "<city>|<date>", "<sight id>|<date>".
+    """
+
+    heavy_rain: list[str] = Field(default_factory=list)  # "city|date": boating, treks and viewpoints are off
+    dry: list[str] = Field(default_factory=list)  # "city|date": checked and fine (overrides a rainy expectation)
+    closed: list[str] = Field(default_factory=list)  # "sight id|date"
+    checked: list[str] = Field(default_factory=list)  # every fact already asked about, so nothing is checked twice
+    checks: int = 0  # how many facts were asked about in total (the cost of sensing)
+
+    def is_heavy_rain(self, city: str, day: str) -> bool:
+        return f"{city}|{day}" in self.heavy_rain
+
+    def is_dry(self, city: str, day: str) -> bool:
+        return f"{city}|{day}" in self.dry
+
+    def is_closed(self, sight_id: str, day: str) -> bool:
+        return f"{sight_id}|{day}" in self.closed
 
 
 # ---------------------------------------------------------------------------
@@ -280,28 +294,6 @@ class EditLocks(BaseModel):
     light_days: list[int] = Field(default_factory=list)
     pace: Optional[str] = None  # relaxed | moderate | packed
     day_start_hour: Optional[float] = None
-
-    def describe(self) -> list[str]:
-        out = []
-        if self.pinned_cities:
-            out.append("cities: " + ", ".join(self.pinned_cities))
-        if self.excluded_cities:
-            out.append("avoid: " + ", ".join(self.excluded_cities))
-        if self.preferred_mode:
-            out.append(f"travel by {self.preferred_mode}")
-        out += [f"hotel ({city}): {pref}" for city, pref in self.hotel_prefs.items()]
-        if self.excluded_activities:
-            out.append("skip: " + ", ".join(self.excluded_activities))
-        out += [f"{name} on day {day}" for name, day in self.pinned_activities.items()]
-        if self.free_days:
-            out.append(f"free days: {self.free_days}")
-        if self.light_days:
-            out.append(f"light days: {self.light_days}")
-        if self.pace:
-            out.append(f"pace: {self.pace}")
-        if self.day_start_hour is not None:
-            out.append(f"start at {self.day_start_hour:g}:00")
-        return out
 
 
 class EditDirective(BaseModel):

@@ -67,14 +67,23 @@ const fadeUp = {
   show: { opacity: 1, y: 0 },
 };
 
+/** How often the world surprises the plan: weather, closed sights, strikes. The agents only learn what is real by checking. */
+const FIELDS = [
+  { value: "off", label: "Calm world", hint: "nothing goes wrong" },
+  { value: "normal", label: "Normal", hint: "some rain, some closures" },
+  { value: "high", label: "Rough", hint: "frequent surprises" },
+] as const;
+
 export default function Home() {
   const router = useRouter();
   const [message, setMessage] = useState("");
+  const [field, setField] = useState<(typeof FIELDS)[number]["value"]>("normal");
 
   function handleSubmit(text: string) {
     if (!text.trim()) return;
     const threadId = newThreadId();
     sessionStorage.setItem(`odyssey:${threadId}:message`, text);
+    sessionStorage.setItem(`odyssey:${threadId}:options`, JSON.stringify({ uncertainty: field }));
     router.push(`/plan/${threadId}`);
   }
 
@@ -173,7 +182,22 @@ export default function Home() {
             </div>
           </motion.form>
 
-          <div className="mt-6 flex flex-wrap justify-center gap-2">
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-sm text-muted">
+            <span>Field:</span>
+            {FIELDS.map((f) => (
+              <button
+                key={f.value}
+                type="button"
+                title={f.hint}
+                onClick={() => setField(f.value)}
+                className={`rounded-full border px-3 py-1 text-xs transition-colors ${field === f.value ? "border-brand-primary bg-selected text-brand-primary" : "border-line bg-white hover:border-grey-400"}`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
             {EXAMPLES.map((example) => (
               <button
                 key={example}

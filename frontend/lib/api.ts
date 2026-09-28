@@ -1,5 +1,5 @@
 // Same-origin: next.config.mjs forwards /api/* to the backend, so no CORS and no address to keep in sync.
-import { AgentStepEvent } from "./types";
+import { AgentStepEvent, CompareResponse } from "./types";
 
 export interface DisruptPayload {
   thread_id: string;
@@ -54,4 +54,9 @@ export async function postJson<T = unknown>(path: string, body?: unknown, signal
     throw new Error(detail);
   }
   return res.json() as Promise<T>;
+}
+
+/** Run every strategy on this thread's request, field and reported events. */
+export async function compareStrategies(threadId: string, signal?: AbortSignal): Promise<CompareResponse> {
+  return postJson<CompareResponse>("/api/compare", { thread_id: threadId }, signal);
 }

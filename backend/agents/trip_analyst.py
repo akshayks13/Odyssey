@@ -19,12 +19,13 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
-from agents.common import trace
+from agents.base import Agent, Post, Result
+from core.messages import TRAVELLER, Message, MsgType
 from models.schemas import EditLocks, PreferenceWeights, TripConstraints, TripSpec
-from orchestration.state import TripState
 from tools import world
 
 DEFAULT_DAYS = 5
+MAX_STOPS = 6  # a long trip may visit up to six places; a short one is limited by its days (about two per stop)
 DEFAULT_TRAVELLERS = 2
 DEFAULT_BUDGET_PER_PERSON = 20000.0
 
@@ -199,7 +200,7 @@ def parse_request(raw_input: str, today: date | None = None) -> tuple[TripSpec, 
         travellers=max(1, travellers),
         budget_inr=budget,
         preferences=preferences,
-        constraints=TripConstraints(pace=pace, max_daily_travel_hours=5.0 if pace == "packed" else 4.0, max_destinations=4),
+        constraints=TripConstraints(pace=pace, max_daily_travel_hours=5.0 if pace == "packed" else 4.0, max_destinations=MAX_STOPS),
         start_date=start,
         needs_clarification=assumed,
         clarifying_question=None if region else (
@@ -211,26 +212,46 @@ def parse_request(raw_input: str, today: date | None = None) -> tuple[TripSpec, 
     return spec, parse_mode(text)
 
 
-def trip_analyst_node(state: TripState) -> dict:
-    spec, mode = parse_request(state["raw_input"])
-    meta = trace(tools=["match_region"], algorithms=["keyword / pattern parsing"])
+class TripAnalyst(Agent):
+    name = "trip_analyst"
+    label = "Trip Analyst"
+    role = "Parser: turns the traveller's sentence into a trip spec"
+    architecture = "simple reflex (condition-action rules on the text)"
+    peas = {
+        "performance": "Every stated fact read correctly (days, people, budget, dates, interests, pace, travel mode); every unstated fact reported as an assumption; never a guessed place",
+        "environment": "The traveller's sentence and the list of regions the dataset covers",
+        "actuators": "Write the trip spec; ask the traveller a question (NEED_INFO); send SPEC_READY",
+        "sensors": "The request text; the region and city index",
+    }
+    reads = ("raw_input", "edit_locks")
+    writes = ("trip_spec", "edit_locks", "assistant_reply")
 
-    if not spec.destination_region:
-        return {
-            "trip_spec": spec,
-            "assistant_reply": spec.clarifying_question,
-            "agent_meta": meta,
-            "agent_messages": [f"Trip Analyst: no known destination in the request — asking: {spec.clarifying_question}"],
-        }
+    def handle(self, msg: Message, view: dict) -> Result:
+        spec, mode = parse_request(view["raw_input"])
+        base = dict(tools=["match_region"], algorithms=["keyword / pattern parsing"])
 
-    locks: EditLocks = (state.get("edit_locks") or EditLocks()).model_copy(deep=True)
-    if mode:
-        locks.preferred_mode = mode
-    stressed = [k for k, v in spec.preferences.as_dict().items() if v >= 0.9]
-    assumed = f" (assumed: {', '.join(spec.needs_clarification)})" if spec.needs_clarification else ""
-    message = (
-        f"Trip Analyst: {spec.destination_region}, {spec.duration_days} days from {spec.start_date}, "
-        f"₹{spec.budget_inr:,.0f} for {spec.travellers} traveller(s), {spec.constraints.pace} pace"
-        f"{', interests: ' + ', '.join(stressed) if stressed else ''}{', by ' + mode if mode else ''}{assumed}."
-    )
-    return {"trip_spec": spec, "edit_locks": locks, "assistant_reply": None, "agent_meta": meta, "agent_messages": [message]}
+        if not spec.destination_region:
+            question = spec.clarifying_question
+            return Result(
+                updates={"trip_spec": spec, "assistant_reply": question},
+                posts=[Post(MsgType.NEED_INFO, TRAVELLER, question)],
+                message=f"Trip Analyst: no known destination in the request — asking: {question}",
+                **base,
+            )
+
+        locks: EditLocks = (view["edit_locks"] or EditLocks()).model_copy(deep=True)
+        if mode:
+            locks.preferred_mode = mode
+        stressed = [k for k, v in spec.preferences.as_dict().items() if v >= 0.9]
+        assumed = f" (assumed: {', '.join(spec.needs_clarification)})" if spec.needs_clarification else ""
+        message = (
+            f"Trip Analyst: {spec.destination_region}, {spec.duration_days} days from {spec.start_date}, "
+            f"₹{spec.budget_inr:,.0f} for {spec.travellers} traveller(s), {spec.constraints.pace} pace"
+            f"{', interests: ' + ', '.join(stressed) if stressed else ''}{', by ' + mode if mode else ''}{assumed}."
+        )
+        return Result(
+            updates={"trip_spec": spec, "edit_locks": locks, "assistant_reply": None},
+            posts=[Post(MsgType.SPEC_READY, "destination_agent", f"{spec.duration_days} days, ₹{spec.budget_inr:,.0f}, {spec.travellers} people")],
+            message=message,
+            **base,
+        )

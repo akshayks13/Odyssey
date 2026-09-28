@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import math
 
-from agents.common import trace
+from agents.base import Agent, Post, Result
 from algorithms.planning import PACE_CAPS, activity_is_excluded, plan_stays
+from core.messages import Message, MsgType
 from models.schemas import BudgetBreakdown, BudgetLineItem, DisruptionType, EditLocks, Hotel
-from orchestration.state import TripState
 from tools import world
 from tools.budget_validator import generate_tradeoff_options, validate_budget
 from tools.cost_calculator import calculate_activity_costs, estimate_food_costs, estimate_local_transport
@@ -48,7 +48,8 @@ def pick_hotel(rows: list[dict], city: str, tier: str, locks: EditLocks) -> tupl
     return next((h for h in rows if h["tier"] == tier), sorted(rows, key=lambda h: h["price_per_night_inr"])[0]), False
 
 
-def budget_agent_node(state: TripState) -> dict:
+def price_trip(state: dict) -> Result:
+    """The whole pricing procedure, from the blackboard view to the agent's result."""
     spec = state["trip_spec"]
     region = spec.destination_region
     selected = state.get("selected_destinations", [])
@@ -140,7 +141,7 @@ def budget_agent_node(state: TripState) -> dict:
         hotel_saving = sum((chosen[c]["price_per_night_inr"] - min(h["price_per_night_inr"] for h in rows)) * nights.get(c, 0) * rooms
                            for c, rows in hotel_rows.items() if c in chosen and rows)
         paid = [a.cost_inr for acts in kept.values() for a in acts if a.cost_inr > 0]
-        tradeoffs.extend(generate_tradeoff_options(check["over_by_inr"], hotel_saving, max(paid) * spec.travellers if paid else 0.0))
+        tradeoffs.extend(generate_tradeoff_options(hotel_saving, max(paid) * spec.travellers if paid else 0.0))
 
     hotels_inr, activities_inr = hotel_total(), activities_total()
     breakdown = BudgetBreakdown(
@@ -170,15 +171,34 @@ def budget_agent_node(state: TripState) -> dict:
         f"Budget Agent: {tier} tier, total ₹{grand_total:,.0f} vs ceiling ₹{ceiling:,.0f} ({status}"
         f"{f', dropped {len(dropped)} activity(ies)' if dropped else ''}); {rooms} room(s), stays {stays}."
     )
-    return {
-        "budget_breakdown": breakdown,
-        "accommodation_options": accommodation_options,
-        "excluded_activity_ids": dropped_ids,
-        "stay_plan": stay_plan,
-        "agent_meta": trace(
-            tools=["hotels", "estimate_food_costs", "estimate_local_transport", "validate_budget"],
-            algorithms=["greedy repair: cheapest hotels, then least value-per-rupee sights"] if over_at_first else [],
-            note=f"{tier} tier" + (" (one cheaper: the last plan did not fit)" if cheaper else "") + (", over the ceiling at first" if over_at_first else ""),
-        ),
-        "agent_messages": [message],
+    return Result(
+        updates={
+            "budget_breakdown": breakdown,
+            "accommodation_options": accommodation_options,
+            "excluded_activity_ids": dropped_ids,
+            "stay_plan": stay_plan,
+        },
+        posts=[Post(MsgType.BUDGET_READY, "itinerary_architect", f"₹{grand_total:,.0f} of ₹{ceiling:,.0f} ({status})")],
+        message=message,
+        tools=["hotels", "estimate_food_costs", "estimate_local_transport", "validate_budget"],
+        algorithms=["greedy repair: cheapest hotels, then least value-per-rupee sights"] if over_at_first else [],
+        note=f"{tier} tier" + (" (one cheaper: the last plan did not fit)" if cheaper else "") + (", over the ceiling at first" if over_at_first else ""),
+    )
+
+
+class BudgetAgent(Agent):
+    name = "budget_agent"
+    label = "Budget Optimization"
+    role = "Money: prices hotels, food, sights and transport against the ceiling and repairs an overrun"
+    architecture = "utility-based (trades comfort for money by the cheapest damage per rupee saved)"
+    peas = {
+        "performance": "Total at or under the ceiling; the fewest and least valuable sights dropped; the traveller's hotel choices kept",
+        "environment": "Hotel prices per tier, food and local-transport prices, fares from Mobility, the ceiling and any reported budget cut",
+        "actuators": "Write the budget breakdown, the hotels, the stay plan and the sights dropped; send BUDGET_READY",
+        "sensors": "The route and its fares, the candidate sights, the trip spec, the edit locks, reported budget cuts, the previous breakdown",
     }
+    reads = ("trip_spec", "selected_destinations", "route", "candidate_activities", "edit_locks", "disruptions", "budget_breakdown")
+    writes = ("budget_breakdown", "accommodation_options", "excluded_activity_ids", "stay_plan")
+
+    def handle(self, msg: Message, view: dict) -> Result:
+        return price_trip(view)

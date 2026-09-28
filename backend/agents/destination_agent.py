@@ -8,7 +8,7 @@ Rules:
   2. Never pick a city that is closed, hit by a storm, excluded by the traveller, or that the Critic
      said to avoid.
   3. Cities the traveller named (or pinned in an edit) come first.
-  4. Fill up to ceil(days / 2) cities (max 4), best score first, but only cities within one day's
+  4. Fill up to ceil(days / 2) cities (max 6), best score first, but only cities within one day's
      travel (UCS road time <= the daily limit) of a city already chosen, so the stops stay close. Without
      named cities the set is grown from every seed city and the best total score wins.
   5. Sent back by the Critic: keep the chosen cities that are still fine, replace only the blocked one;
@@ -20,10 +20,10 @@ from __future__ import annotations
 import math
 from datetime import date, timedelta
 
-from agents.common import trace
+from agents.base import Agent, Post, Result
 from algorithms.planning import activity_is_excluded
+from core.messages import Message, MsgType
 from models.schemas import Activity, Coordinates, Destination, DisruptionType, EditLocks, TripSpec
-from orchestration.state import TripState
 from tools import world
 from tools.preference_scorer import score_preference_match, sight_preference
 
@@ -57,9 +57,7 @@ def rank_cities(spec: TripSpec, disrupted: set[str]) -> list[Destination]:
                 coordinates=Coordinates(**c["coordinates"]),
                 preference_score=round(score, 4),
                 description=c["description"],
-                tags=c["tags"],
                 weather_summary=f"{first['condition']}, {first['tmin']:.0f}–{first['tmax']:.0f}°C, rain likely on {rainy} of {len(days)} days",
-                weather_risk=risky or c["name"] in disrupted,
             )
         )
     ranked.sort(key=lambda d: (-d.preference_score, d.name))
@@ -114,63 +112,79 @@ def load_sights(spec: TripSpec, city_name: str, closed: set[str], locks: EditLoc
                 closing_hour=s["closing_hour"],
                 preference_score=round(pref, 4),
                 coordinates=Coordinates(**s["coordinates"]),
-                source="dataset",
             )
         )
     return out
 
 
-def destination_agent_node(state: TripState) -> dict:
-    spec: TripSpec = state["trip_spec"]
-    locks: EditLocks = state.get("edit_locks") or EditLocks()
-    disruptions = state.get("disruptions", [])
-    region = spec.destination_region
+class DestinationAgent(Agent):
+    name = "destination_agent"
+    label = "Destination Discovery"
+    role = "Explorer: ranks the region's cities for this traveller and picks the stops"
+    architecture = "goal-based (finds a set of stops that satisfies the interest and distance goals)"
+    peas = {
+        "performance": "High interest match; every stop within a day's travel of another; no closed, avoided or storm-hit city; enough sights for the days spent there",
+        "environment": "The region's cities, their interest profiles, the road network, monthly weather, and the traveller's standing choices",
+        "actuators": "Write the ranked cities, the chosen stops and their sights; send CITIES_READY",
+        "sensors": "The trip spec, the edit locks, reported disruptions, the Critic's REPLAN directive",
+    }
+    reads = ("trip_spec", "edit_locks", "disruptions", "selected_destinations")
+    writes = ("candidate_destinations", "selected_destinations", "candidate_activities", "excluded_activity_ids")
 
-    disrupted = {d.target for d in disruptions if d.type in (DisruptionType.CLOSURE, DisruptionType.WEATHER)}
-    avoid = {c for d in state.get("replan_directives", []) if d.target_agent == "destination_agent" for c in d.constraints.get("avoid", [])}
-    excluded = {world.match_city(region, c) or c for c in locks.excluded_cities}
-    blocked = disrupted | avoid | excluded
+    def handle(self, msg: Message, view: dict) -> Result:
+        spec: TripSpec = view["trip_spec"]
+        locks: EditLocks = view["edit_locks"] or EditLocks()
+        disruptions = view["disruptions"]
+        region = spec.destination_region
+        directive = msg.payload.get("directive") if msg.type == MsgType.REPLAN else None
+        restart = bool(directive and directive.constraints.get("restart"))
 
-    ranked = rank_cities(spec, disrupted)
-    named = [world.match_city(region, c) or c for c in locks.pinned_cities] or world.cities_named_in(region, spec.raw_input)
-    wanted = list(named)
-    usual = min(4, spec.constraints.max_destinations, math.ceil(spec.duration_days / 2))
+        disrupted = {d.target for d in disruptions if d.type in (DisruptionType.CLOSURE, DisruptionType.WEATHER)}
+        avoid = set(directive.constraints.get("avoid", [])) if directive else set()
+        excluded = {world.match_city(region, c) or c for c in locks.excluded_cities}
+        blocked = disrupted | avoid | excluded
 
-    # Sent back by the Critic: keep the cities that are still fine and replace only what was blocked.
-    # Days with nothing to see mean too few sights, so take one more city.
-    sent_back = [d for d in state.get("replan_directives", []) if d.target_agent == "destination_agent"]
-    if sent_back:
-        wanted = wanted + [d.name for d in state.get("selected_destinations", []) if d.name not in blocked]
-        if sent_back[-1].constraints.get("issue") == "LEISURE_DAY":
-            usual += 1
-    wanted = [c for c in dict.fromkeys(wanted) if c not in blocked]
-    limit = max(1, min(spec.duration_days, max(usual, len(wanted))))  # everything wanted, but never more cities than days
-    selected = choose_cities(spec, ranked, blocked, wanted, limit)
-    activities = {d.name: load_sights(spec, d.name, disrupted, locks) for d in selected}
+        ranked = rank_cities(spec, disrupted)
+        named = [world.match_city(region, c) or c for c in locks.pinned_cities] or world.cities_named_in(region, spec.raw_input)
+        wanted = list(named)
+        usual = min(spec.constraints.max_destinations, math.ceil(spec.duration_days / 2))
 
-    notes = []
-    if named:
-        notes.append(f"you asked for {', '.join(named)}")
-    kept = [c for c in wanted if c not in named]
-    if kept:
-        notes.append(f"kept {', '.join(kept)}")
-    if blocked:
-        notes.append(f"avoided {', '.join(sorted(blocked))}")
-    message = (
-        f"Destination Agent: ranked {len(ranked)} cities by interest match, selected "
-        f"{', '.join(f'{d.name} ({d.preference_score:.2f})' for d in selected)}"
-        + (f"; {'; '.join(notes)}" if notes else "") + "."
-    )
-    return {
-        "candidate_destinations": ranked,
-        "selected_destinations": selected,
-        "candidate_activities": activities,
-        "excluded_activity_ids": [],
-        "agent_meta": trace(
+        # Sent back by the Critic: keep the cities that are still fine and replace only what was blocked.
+        # Days with nothing to see mean too few sights, so take one more city. (A restart starts fresh.)
+        sent_back = directive is not None and not restart
+        if sent_back:
+            wanted = wanted + [d.name for d in view["selected_destinations"] if d.name not in blocked]
+            if directive.constraints.get("issue") == "LEISURE_DAY":
+                usual += 1
+        wanted = [c for c in dict.fromkeys(wanted) if c not in blocked]
+        limit = max(1, min(spec.duration_days, max(usual, len(wanted))))  # everything wanted, but never more cities than days
+        selected = choose_cities(spec, ranked, blocked, wanted, limit)
+        activities = {d.name: load_sights(spec, d.name, disrupted, locks) for d in selected}
+
+        notes = []
+        if named:
+            notes.append(f"you asked for {', '.join(named)}")
+        kept = [c for c in wanted if c not in named]
+        if kept:
+            notes.append(f"kept {', '.join(kept)}")
+        if blocked:
+            notes.append(f"avoided {', '.join(sorted(blocked))}")
+        message = (
+            f"Destination Agent: ranked {len(ranked)} cities by interest match, selected "
+            f"{', '.join(f'{d.name} ({d.preference_score:.2f})' for d in selected)}"
+            + (f"; {'; '.join(notes)}" if notes else "") + "."
+        )
+        return Result(
+            updates={
+                "candidate_destinations": ranked,
+                "selected_destinations": selected,
+                "candidate_activities": activities,
+                "excluded_activity_ids": [],
+            },
+            posts=[Post(MsgType.CITIES_READY, "mobility_agent", ", ".join(d.name for d in selected))],
+            message=message,
             tools=["score_preference_match", "weather_on", "road_route", "sights"],
             algorithms=["cosine preference ranking", "UCS road-time proximity check"],
             note=f"up to {limit} cities for {spec.duration_days} days, within {spec.constraints.max_daily_travel_hours:g}h of each other"
             + ("; kept the cities still fine and replaced the rest" if sent_back else ""),
-        ),
-        "agent_messages": [message],
-    }
+        )

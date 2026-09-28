@@ -6,13 +6,15 @@ import Link from "next/link";
 import { CloudRain, HelpCircle, Info } from "lucide-react";
 import { fetchItinerary } from "@/lib/api";
 import { useAgentStream } from "@/lib/useAgentStream";
-import { AgentStepEvent, Destination } from "@/lib/types";
+import { AgentStepEvent, BusMessage, Destination } from "@/lib/types";
 import { AgentTimeline } from "@/components/AgentTimeline";
 import { ChatTurn, EditBox } from "@/components/EditBox";
 import { ItineraryView } from "@/components/ItineraryView";
 import { MapView } from "@/components/MapView";
 import { BudgetChart } from "@/components/BudgetChart";
 import { DisruptionPanel } from "@/components/DisruptionPanel";
+import { ComparePanel } from "@/components/ComparePanel";
+import { MessageLog } from "@/components/MessageLog";
 
 function DestinationStrip({ destinations }: { destinations: Destination[] }) {
   if (!destinations.length) return null;
@@ -31,13 +33,14 @@ function DestinationStrip({ destinations }: { destinations: Destination[] }) {
 export default function PlanPage() {
   const params = useParams<{ threadId: string }>();
   const threadId = params.threadId;
-  const { statuses, messages, latest, isStreaming, error, startPlan, revise, injectDisruption } = useAgentStream();
+  const { statuses, messages, busMessages, latest, isStreaming, error, startPlan, revise, injectDisruption } = useAgentStream();
 
   const [planData, setPlanData] = useState<AgentStepEvent | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [question, setQuestion] = useState<string | null>(null);
   const [answer, setAnswer] = useState("");
+  const [busLog, setBusLog] = useState<BusMessage[]>([]);
   const request = useRef("");
   const handled = useRef<AgentStepEvent | null>(null);
 
@@ -51,14 +54,18 @@ export default function PlanPage() {
       sessionStorage.removeItem(key);
       sessionStorage.setItem(planningKey, pendingMessage);
       request.current = pendingMessage;
-      startPlan(pendingMessage, threadId);
+      const options = JSON.parse(sessionStorage.getItem(`odyssey:${threadId}:options`) || "{}");
+      startPlan(pendingMessage, threadId, options);
       return;
     }
     if (sessionStorage.getItem(planningKey)) {
       return;
     }
     fetchItinerary(threadId)
-      .then((data) => setPlanData({ type: "done", ...data }))
+      .then((data) => {
+        setPlanData({ type: "done", ...data });
+        setBusLog(data.messages ?? []);
+      })
       .catch((e) => setLoadError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
@@ -69,6 +76,7 @@ export default function PlanPage() {
     handled.current = latest;
     sessionStorage.removeItem(`odyssey:${threadId}:planning`);
     setLoadError(null);
+    setBusLog(latest.messages ?? []);
 
     if (latest.reply) {
       if (planData?.itinerary) setTurns((t) => [...t, { role: "assistant", text: latest.reply as string }]);
@@ -94,7 +102,7 @@ export default function PlanPage() {
     setAnswer("");
     setQuestion(null);
     sessionStorage.setItem(`odyssey:${threadId}:planning`, request.current);
-    startPlan(request.current, threadId);
+    startPlan(request.current, threadId, JSON.parse(sessionStorage.getItem(`odyssey:${threadId}:options`) || "{}"));
   }
 
   const showResults = planData && planData.itinerary;
@@ -126,6 +134,8 @@ export default function PlanPage() {
               {error || loadError}
             </div>
           )}
+
+          <MessageLog messages={isStreaming ? [...busLog, ...busMessages] : busLog} live={isStreaming} />
         </aside>
 
         <section className="space-y-6">
@@ -188,10 +198,17 @@ export default function PlanPage() {
                   <CloudRain className="mt-0.5 h-4 w-4 shrink-0 text-brand-primary" />
                   <p>
                     Rain is likely on {rainyDays.map((d) => `day ${d.day_number} (${d.destination})`).join(", ")}
-                    {" — typical for that month"}. Indoor
+                    {rainyDays.some((d) => d.weather?.source === "field report") ? " — including days the field check reported" : " — typical for that month"}. Indoor
                     sights are scheduled first on those days; pack a raincoat.
                   </p>
                 </div>
+              )}
+
+              {planData?.stats && (
+                <p className="text-xs text-muted">
+                  {planData.stats.agent_runs} agent runs · {planData.stats.messages} messages
+                  {planData.stats.field_checks > 0 ? ` · ${planData.stats.field_checks} facts checked in the field (weather, closures, strikes) for the days, sights and journeys in this plan` : ""}
+                </p>
               )}
 
               <DestinationStrip destinations={planData!.selected_destinations || []} />
@@ -210,6 +227,8 @@ export default function PlanPage() {
                 onInject={injectDisruption}
                 disabled={isStreaming}
               />
+
+              <ComparePanel threadId={threadId} disabled={isStreaming} />
             </>
           )}
         </section>

@@ -7,35 +7,31 @@ Each day is a CSP (algorithms/csp_solver.py) solved by backtracking with MRV and
 sights must fit their opening hours, lunch 12-14 and dinner 19-21, with travel time between them.
 
 Rules: pace sets the day (relaxed 9-18 / 2 sights, moderate 8-21 / 3, packed 7-22 / 4). An arrival day
-starts after the transfer. A rainy day (monthly average) tries indoor sights first. The traveller's
-free days, light days and pinned sights are honoured. Afterwards the multi-objective score is computed
-and the activity cost is replaced by what was actually scheduled.
+starts after the transfer. A day the monthly average calls rainy tries indoor sights first. What the
+field reports says overrides the average: on a day of heavy rain the outdoor sights are dropped from that
+day (they stay available for later days), and a sight reported closed that day is dropped too. The
+traveller's free days, light days and pinned sights are honoured. Afterwards the multi-objective score is
+computed and the activity cost is replaced by what was actually scheduled.
+
+The full system solves each day as a CSP; the "greedy_schedule" strategy uses a first-fit timetable instead.
 """
 from __future__ import annotations
 
 from datetime import date, timedelta
 
-from agents.common import trace
+from agents.base import Agent, Post, Result
 from algorithms.csp_solver import solve_day_schedule
 from algorithms.optimizer import compute_score, infer_archetype
 from algorithms.planning import PACE_CAPS, PACE_HOURS, activity_is_excluded, plan_stays
-from models.schemas import Coordinates, DayWeather, EditLocks, Hotel, Itinerary, ItineraryDay, RouteLeg, ScheduledItem, TransportMode
-from orchestration.state import TripState
+from core.messages import Message, MsgType
+from core.strategies import Strategy
+from models.schemas import Coordinates, DayWeather, EditLocks, Hotel, Itinerary, ItineraryDay, ObservedFacts, RouteLeg, ScheduledItem, TransportMode
 from tools import world
 from tools.cost_calculator import reconcile_activity_costs
 from tools.schedule_validator import check_schedule_conflicts
+from tools.world import OUTDOOR_CATEGORIES as OUTDOOR
 
-OUTDOOR = {"nature", "adventure"}  # what rain spoils
 MIN_SIGHTSEEING_WINDOW = 2.0  # hours; with less than this left, the day is a travel day
-
-
-def _coords_of(act: dict, fallback: Coordinates | None) -> dict | None:
-    raw = act.get("coordinates")
-    if isinstance(raw, dict) and raw.get("lat") is not None:
-        return {"lat": raw["lat"], "lng": raw["lng"]}
-    if fallback:
-        return {"lat": fallback.lat, "lng": fallback.lng}
-    return None
 
 
 def _hotel_for_destination(budget, dest_name: str) -> Hotel | None:
@@ -43,16 +39,26 @@ def _hotel_for_destination(budget, dest_name: str) -> Hotel | None:
     return next((h for h in (budget.selected_hotels if budget else []) if h.destination == dest_name), None)
 
 
-def _matrix_for_day(depot: Coordinates | None, acts: list[dict]) -> list[list[int]] | None:
-    if depot is None:
-        return None
-    points = [{"lat": depot.lat, "lng": depot.lng}]
-    for act in acts:
-        coord = _coords_of(act, depot)
-        if coord is None:
-            return None
-        points.append(coord)
+def _matrix_for_day(depot: Coordinates, acts: list[dict]) -> list[list[int]]:
+    """Minutes between the hotel (the city centre) and every sight of the day."""
+    points = [{"lat": depot.lat, "lng": depot.lng}] + [a["coordinates"] for a in acts]
     return world.travel_time_matrix(points)
+
+
+def _day_weather(w: dict, heavy_rain: bool, checked: bool) -> DayWeather:
+    """The day's weather: the monthly average, or what the field report says when the day has been checked."""
+    condition = "Heavy rain (field report)" if heavy_rain else w["condition"]
+    has_temps = w["tmin"] is not None and w["tmax"] is not None
+    return DayWeather(
+        summary=f"{condition}, {w['tmin']:.0f}–{w['tmax']:.0f}°C" if has_temps else condition,
+        condition=condition,
+        tmin=w["tmin"],
+        tmax=w["tmax"],
+        rain_mm=w["rain_mm"],
+        rain_chance=w["rain_chance"],
+        rainy=w["rainy"] or heavy_rain,
+        source="field report" if checked else w["source"],
+    )
 
 
 def _transfer_buffer(leg: RouteLeg) -> float:
@@ -68,7 +74,8 @@ def _pinned_day(act_name: str, locks: EditLocks) -> int | None:
     return None
 
 
-def itinerary_architect_node(state: TripState) -> dict:
+def build_schedule(state: dict, strategy: Strategy) -> Result:
+    """The whole scheduling procedure, from the blackboard view to the agent's result."""
     spec = state["trip_spec"]
     route = state.get("route")
     activities_by_dest = state.get("candidate_activities", {})
@@ -76,6 +83,7 @@ def itinerary_architect_node(state: TripState) -> dict:
     selected = state.get("selected_destinations", [])
     excluded = set(state.get("excluded_activity_ids") or [])
     locks: EditLocks = state.get("edit_locks") or EditLocks()
+    observed: ObservedFacts = state.get("observed") or ObservedFacts()
     dest_coords = {d.name: d.coordinates for d in selected}
 
     order = (route.ordered_destinations if route and route.ordered_destinations else [d.name for d in selected]) or [
@@ -109,7 +117,7 @@ def itinerary_architect_node(state: TripState) -> dict:
         pool = [
             a.model_dump()
             for a in activities_by_dest.get(dest_name, [])
-            if a.id not in excluded and not a.is_closed and not activity_is_excluded(a.name, locks)
+            if a.id not in excluded and not activity_is_excluded(a.name, locks)
         ]
         pool.sort(key=lambda a: a.get("preference_score") or 0, reverse=True)
         depot = dest_coords.get(dest_name)
@@ -123,7 +131,9 @@ def itinerary_architect_node(state: TripState) -> dict:
         for day_in_block in range(block.days):
             if day_number > spec.duration_days:
                 break
-            today_weather = weather_by_date.get((start_date + timedelta(days=day_number - 1)).isoformat()) if start_date else None
+            day_iso = (start_date + timedelta(days=day_number - 1)).isoformat() if start_date else None
+            today_weather = weather_by_date.get(day_iso) if day_iso else None
+            heavy_rain = bool(day_iso) and observed.is_heavy_rain(dest_name, day_iso)  # reported, not just expected
             first_here = day_in_block == 0
             is_last_day = day_number >= spec.duration_days
             win_start, win_end = day_start, day_end
@@ -143,8 +153,16 @@ def itinerary_architect_node(state: TripState) -> dict:
             items: list[ScheduledItem] = []
             if kind == "sightseeing":
                 cap = 1 if day_number in locks.light_days else per_day_cap
-                pinned_today = [a for a in pool if _pinned_day(a["name"], locks) == day_number]
-                waiting = [a for a in pool if a not in pinned_today and _pinned_day(a["name"], locks) is None]
+                # What the field reports rules out today: outdoor sights in heavy rain, and sights closed today.
+                rained_out = [a for a in pool if heavy_rain and a["category"] in OUTDOOR]
+                closed_today = [a for a in pool if day_iso and observed.is_closed(a["id"], day_iso)]
+                available = [a for a in pool if a not in rained_out and a not in closed_today]
+                if rained_out:
+                    note = " · ".join(x for x in (note, "Heavy rain reported — outdoor sights skipped today.") if x)
+                if closed_today:
+                    note = " · ".join(x for x in (note, f"Closed today: {', '.join(a['name'] for a in closed_today)}.") if x)
+                pinned_today = [a for a in available if _pinned_day(a["name"], locks) == day_number]
+                waiting = [a for a in available if a not in pinned_today and _pinned_day(a["name"], locks) is None]
                 # Only sights open long enough inside today's window (a 6-9am class cannot follow an 11am arrival).
                 waiting = [a for a in waiting if min(a["closing_hour"], win_end) - max(a["opening_hour"], win_start) >= a["duration_minutes"] / 60]
                 if today_weather and today_weather["rainy"]:  # rain: indoor sights first, outdoor ones wait for a dry day
@@ -158,6 +176,7 @@ def itinerary_architect_node(state: TripState) -> dict:
                         day_end_hour=win_end,
                         travel_matrix_minutes=_matrix_for_day(depot, candidates),
                         include_meals=True,
+                        method=strategy.scheduler,
                     )
                     solver_runs.append(result["stats"])
                     return result
@@ -215,21 +234,7 @@ def itinerary_architect_node(state: TripState) -> dict:
                     date=(start_date + timedelta(days=day_number - 1)).isoformat() if start_date else None,
                     kind=kind,
                     note=note,
-                    weather=(
-                        DayWeather(
-                            summary=f"{today_weather['condition']}, {today_weather['tmin']:.0f}–{today_weather['tmax']:.0f}°C"
-                            if today_weather["tmin"] is not None and today_weather["tmax"] is not None else today_weather["condition"],
-                            condition=today_weather["condition"],
-                            tmin=today_weather["tmin"],
-                            tmax=today_weather["tmax"],
-                            rain_mm=today_weather["rain_mm"],
-                            rain_chance=today_weather["rain_chance"],
-                            rainy=today_weather["rainy"],
-                            source=today_weather["source"],
-                        )
-                        if today_weather
-                        else None
-                    ),
+                    weather=_day_weather(today_weather, heavy_rain, checked=bool(day_iso) and (heavy_rain or observed.is_dry(dest_name, day_iso))) if today_weather else None,
                     items=items,
                     travel_leg=inbound if first_here else None,
                     overnight_hotel=None if is_last_day else _hotel_for_destination(budget, dest_name),
@@ -271,26 +276,47 @@ def itinerary_architect_node(state: TripState) -> dict:
         score_breakdown=score_result["breakdown"],
     )
 
-    out: dict = {"draft_itinerary": itinerary, "optimization_score": score_result["total"]}
+    updates: dict = {"draft_itinerary": itinerary, "optimization_score": score_result["total"]}
     if budget:
+        # Budget priced the sights before they were scheduled; the Architect replaces that estimate with what it really scheduled.
         reconciled = reconcile_activity_costs(budget, itinerary, activity_costs, spec.travellers)
         itinerary.total_cost_inr = reconciled.total_inr
-        out["budget_breakdown"] = reconciled
+        updates["budget_breakdown"] = reconciled
 
     sightseeing_days = sum(1 for d in itinerary_days if any(i.kind == "activity" for i in d.items))
     solved = len(solver_runs)  # travel and free days are never sent to the solver
     nodes = sum(r["nodes"] for r in solver_runs)
     backtracks = sum(r["backtracks"] for r in solver_runs)
-    out["agent_meta"] = trace(
+    solver_name = "CSP backtracking + MRV + forward checking" if strategy.scheduler == "csp" else "greedy first-fit timetable"
+    # The schedule goes to the field check when the strategy observes, straight to the Critic when it does not.
+    reviewer = "environment" if strategy.observe else "critic_replanner"
+    return Result(
+        updates=updates,
+        posts=[Post(MsgType.SCHEDULE_READY, reviewer, f"{len(itinerary_days)} days, {sightseeing_days} with sights, score {score_result['total']:.2f}")],
+        message=(
+            f"Itinerary Architect: built {len(itinerary_days)}-day schedule "
+            f"({sightseeing_days} sightseeing day(s), meals and travel time included), "
+            f"score {score_result['total']:.2f} ({archetype} profile)."
+        ),
         tools=["weather_on", "travel_time_matrix", "check_schedule_conflicts"],
-        algorithms=(
-            [f"CSP backtracking + MRV + forward checking ({solved} day{'s' if solved != 1 else ''}, {nodes} nodes, {backtracks} backtracks)"] if solved else []
-        ) + ["multi-objective scoring"],
+        algorithms=([f"{solver_name} ({solved} day{'s' if solved != 1 else ''}, {nodes} nodes, {backtracks} backtracks)"] if solved else []) + ["multi-objective scoring"],
         note=f"{pace} pace, {archetype} profile, score {score_result['total']:.2f}",
     )
-    out["agent_messages"] = [
-        f"Itinerary Architect: built {len(itinerary_days)}-day schedule "
-        f"({sightseeing_days} sightseeing day(s), meals and travel time included), "
-        f"score {score_result['total']:.2f} ({archetype} profile)."
-    ]
-    return out
+
+
+class ItineraryArchitect(Agent):
+    name = "itinerary_architect"
+    label = "Itinerary Architect"
+    role = "Scheduler: packs sights and meals into each day and says where each night is spent"
+    architecture = "goal-based (finds a consistent timetable: a constraint satisfaction problem per day)"
+    peas = {
+        "performance": "Every sight inside its opening hours and the day's window; no overlaps once travel time is counted; meals in their windows; the traveller's free, light and pinned days kept; high score",
+        "environment": "Opening hours, distances inside a city, the stay plan, the weather (expected and reported), sights reported closed",
+        "actuators": "Write the day-by-day schedule and the reconciled cost of what it scheduled; send SCHEDULE_READY",
+        "sensors": "The route, the sights and their hours, the budget, the stay plan, the edit locks, the field reports",
+    }
+    reads = ("trip_spec", "route", "candidate_activities", "budget_breakdown", "selected_destinations", "excluded_activity_ids", "edit_locks", "stay_plan", "observed")
+    writes = ("draft_itinerary", "optimization_score", "budget_breakdown")
+
+    def handle(self, msg: Message, view: dict) -> Result:
+        return build_schedule(view, self.strategy)

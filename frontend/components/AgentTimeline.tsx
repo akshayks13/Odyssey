@@ -1,6 +1,6 @@
 "use client";
 
-import { AGENT_ORDER, AgentMeta, AgentStatus, EDIT_AGENT, STEP_LABELS } from "@/lib/types";
+import { AGENT_ORDER, AgentMeta, AgentStatus, EDIT_AGENT, ENV_AGENT, STEP_LABELS } from "@/lib/types";
 import { stepAccent } from "@/lib/palette";
 import { cn } from "@/lib/cn";
 
@@ -70,8 +70,11 @@ export function AgentTimeline({
 }) {
   const lastFor = (agent: string) => [...messages].reverse().find((m) => m.agent === agent);
 
-  // The edit step only appears once a change has been asked for.
-  const steps = statuses[EDIT_AGENT] && statuses[EDIT_AGENT] !== "pending" ? [EDIT_AGENT, ...AGENT_ORDER] : [...AGENT_ORDER];
+  // The edit step only appears once a change has been asked for, and the field check only once the environment has been asked.
+  const ran = (agent: string) => ["running", "done", "error"].includes(statuses[agent] ?? "pending");
+  const steps: string[] = [...AGENT_ORDER];
+  if (ran(ENV_AGENT)) steps.splice(steps.indexOf("itinerary_architect") + 1, 0, ENV_AGENT);
+  if (statuses[EDIT_AGENT] && statuses[EDIT_AGENT] !== "pending") steps.unshift(EDIT_AGENT);
 
   return (
     <div className="space-y-2">
