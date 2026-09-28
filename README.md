@@ -19,7 +19,9 @@ traveller ─EDIT─► Edit Router ─RERUN─► the earliest agent whose inpu
 ```
 
 Full design (PEAS per agent, environment analysis, algorithms, conflict table, results, viva answers):
-[`PLAN.md`](PLAN.md).
+[`PLAN.md`](PLAN.md). The review documents, organised by the rubric lines, are in [`docs/`](docs/):
+[`review1_design_report.md`](docs/review1_design_report.md) (PEAS, environment and agent analysis, algorithmic modelling, Q&A) and
+[`review2_implementation.md`](docs/review2_implementation.md) (tools and setup, multi-agent execution, demo and testing, code structure).
 
 ### Where each rubric line is evidenced
 
