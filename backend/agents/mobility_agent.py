@@ -6,6 +6,8 @@ flight and train quotes it asks for. Does not pick cities or hotels.
 
 Decides: the mode per hop. Honours what the user asked for ("by train", "fly"). A drive longer than the
 daily travel limit is replaced by the fastest flight or train that exists, unless they asked for road.
+A place with no airport is flown to via the nearest one (the quote includes the ride); if both ends
+use the same airport or station there is nothing to fly or ride and the hop stays on the road.
 
 Computes: NetworkX graph + weighted A* (tried from every start city, best kept);
 road quotes (Mapbox, else OSRM); group prices (seats x travellers for air/rail; for road the vehicle
@@ -123,7 +125,8 @@ def mobility_agent_node(state: TripState) -> dict:
             "ROLE: choose how to travel each hop: road, rail or air. "
             "YOU DECIDE: the mode per hop. You know which places have airports and stations and when a "
             "flight or train is worth it over a long drive; call search_public_transport to get a quote "
-            "before choosing rail or air (a place without an airport is quoted with the ride to the nearest one); "
+            "before choosing rail or air (a place without an airport is quoted with the ride to the nearest one; "
+            "if both ends would use the same airport the quote is unavailable, and that hop is by road); "
             "call check_transport_disruptions if a storm could stop a journey on the travel date. "
             "Short drives stay on the road. Honour what the traveller asked for. "
             "For road hops also choose ONE road_vehicle for the trip: own_car when they drive their own car from home "

@@ -86,7 +86,9 @@ def search_public_transport(origin: str, destination: str, mode: str, date: str 
     """Estimate a one-way flight or train journey between two places.
 
     The model knows which places have airports or stations, so a town without one is quoted as
-    "ride to the nearest airport, fly, ride on" with the transfer time included.
+    "ride to the nearest airport, fly, ride on" with the transfer time included. It also names the
+    airport or station each end uses; if both ends use the same one there is nothing to fly or ride
+    (Chennai to Pondicherry both use Chennai's airport), so the quote is unavailable and the hop is by road.
 
     Args:
         origin: Origin place.
@@ -104,13 +106,15 @@ def search_public_transport(origin: str, destination: str, mode: str, date: str 
         return _transport_cache[key]
 
     kind = "flight" if mode == "air" else "train"
+    terminal = "airport" if mode == "air" else "railway station"
     data = llm_json(
         "You estimate realistic one-way travel quotes in India and abroad. Reply ONLY with JSON.",
         (
             f"One-way {kind} from {origin} to {destination}" + (f" around {date}" if date else "") + ", "
-            "one adult, standard economy fare. If either place has no airport/station, include the ride to "
-            "the nearest one in duration_hours and price_inr and say so in note. If no realistic service "
-            'exists, set available to false. Schema: {"available": bool, "operator": str, '
+            f"one adult, standard economy fare. Name the {terminal} the traveller uses at each end (the place's own, or "
+            "the nearest one if it has none) and include the ride to and from them in duration_hours and price_inr "
+            f"(say so in note). If both ends use the same {terminal}, or no realistic service exists, set available to "
+            'false. Schema: {"origin_terminal": str, "destination_terminal": str, "available": bool, "operator": str, '
             '"duration_hours": number (door to door), "price_inr": number (per person), "note": str}'
         ),
     )
@@ -120,6 +124,9 @@ def search_public_transport(origin: str, destination: str, mode: str, date: str 
         hours = price = 0.0
     if not data:
         return {"available": False, "mode": mode, "reason": "no model available to quote this"}
+    start, end = (str(data.get(k) or "").strip().lower() for k in ("origin_terminal", "destination_terminal"))
+    if start and start == end:  # both ends use one terminal: the "flight" is only a road transfer
+        return {"available": False, "mode": mode, "reason": f"both ends use the same {terminal} ({data.get('origin_terminal')}): travel by road"}
     if not data.get("available") or hours <= 0 or price <= 0:
         quote = {"available": False, "mode": mode, "reason": str(data.get("note") or "no realistic service")}
     else:

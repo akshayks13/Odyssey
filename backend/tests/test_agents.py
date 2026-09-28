@@ -261,6 +261,42 @@ def test_a_short_drive_stays_on_the_road(trip_spec, monkeypatch):
     market._transport_cache.clear()
 
 
+def test_a_flight_needs_two_different_airports_and_a_town_without_one_is_reached_via_the_nearest(trip_spec, monkeypatch):
+    """Kochi to Munnar: Munnar has no airport, so both ends use Kochi's and there is nothing to fly. Delhi to Munnar is
+    a real flight to Kochi plus the ride on."""
+    import agents.mobility_agent as mobility
+    import tools.travel_market as market
+    from models.schemas import EditLocks
+
+    def quote_from_model(origin_terminal, destination_terminal, **fields):
+        market._transport_cache.clear()
+        monkeypatch.setattr(market, "llm_json", lambda system, user: {
+            "available": True, "operator": "IndiGo", "duration_hours": 1.5, "price_inr": 4000,
+            "origin_terminal": origin_terminal, "destination_terminal": destination_terminal, **fields})
+
+    quote_from_model("Kochi Airport (COK)", "Kochi Airport (COK)")
+    same = market.search_public_transport.invoke({"origin": "Kochi", "destination": "Munnar", "mode": "air"})
+    assert same["available"] is False and "same airport" in same["reason"]
+
+    quote_from_model("Delhi (DEL)", "Kochi Airport (COK)", note="taxi from COK to Munnar included")
+    far = market.search_public_transport.invoke({"origin": "Delhi", "destination": "Munnar", "mode": "air"})
+    assert far["available"] is True and far["duration_hours"] == 1.5, "a real flight plus the ride on is kept"
+
+    quote_from_model("Kochi Airport (COK)", "Kochi Airport (COK)")
+    monkeypatch.setattr(mobility, "get_llm", lambda: object())
+    monkeypatch.setattr(mobility, "llm_decide", lambda *a, **k: {"modes": {"Kochi|Munnar": "air", "Munnar|Kochi": "air"}})
+    assert mobility_agent_node(_road_state(trip_spec, 2))["route"].legs[0].mode.value == "road", "nothing to fly: drive"
+
+    state = _road_state(trip_spec, 2)
+    state["edit_locks"] = EditLocks(preferred_mode="air")
+    assert mobility_agent_node(state)["route"].legs[0].mode.value == "road", "even when they asked to fly, there is nothing to fly"
+
+    quote_from_model("Ernakulam Junction", "Ernakulam Junction")
+    train = market.search_public_transport.invoke({"origin": "Kochi", "destination": "Munnar", "mode": "rail"})
+    assert train["available"] is False and "railway station" in train["reason"], "the same rule for trains"
+    market._transport_cache.clear()
+
+
 def test_mobility_falls_back_to_road_when_the_model_quote_is_unavailable(trip_spec, monkeypatch):
     import agents.mobility_agent as mobility
     import tools.travel_market as market

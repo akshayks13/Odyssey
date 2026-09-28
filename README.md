@@ -166,3 +166,4 @@ See `backend/.env.example` and `frontend/.env.local.example`. Keys are optional.
 
 - [`docs/review1_design_report.md`](docs/review1_design_report.md): PEAS, environment and agent analysis, algorithmic modelling and search strategy, Q&A
 - [`docs/review2_implementation.md`](docs/review2_implementation.md): tools and setup, multi-agent execution, demo and testing scenarios, code structure
+- [`docs/how_it_works.md`](docs/how_it_works.md): the whole flow in detail, each agent step by step
