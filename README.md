@@ -161,3 +161,8 @@ backend/sample_trip.json A saved plan for the demo (no model needed)
 ## Environment variables
 
 See `backend/.env.example` and `frontend/.env.local.example`. Keys are optional. `GEMINI_MODEL` is the primary model; `GROQ_MODEL` is the last-resort fallback.
+
+## Review documents
+
+- [`docs/review1_design_report.md`](docs/review1_design_report.md): PEAS, environment and agent analysis, algorithmic modelling and search strategy, Q&A
+- [`docs/review2_implementation.md`](docs/review2_implementation.md): tools and setup, multi-agent execution, demo and testing scenarios, code structure
