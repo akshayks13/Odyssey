@@ -125,6 +125,14 @@ Type "make day 2 lighter" or "add Alleppey" in the **Change anything** box. The 
 
 The app says so instead of guessing. Click **See a sample trip** (landing page, or the link in the error box) to open a saved plan that needs no model.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Agent timeline with tool and model chips](docs/screenshots/01-agent-timeline-tools-and-models.png) **Agent timeline** — each step shows the tools called, the algorithm run, and which model answered. | ![Route map and edit box](docs/screenshots/02-route-map-and-edit-box.png) **Route + edit box** — the MapLibre route between destinations, and the "Change anything" free-text edit. |
+| ![Day schedule and fit score](docs/screenshots/03-day-schedule-and-fit-score.png) **Day-by-day schedule** — fit score, estimated total, and a timed day with hotel, activities, and weather. | ![Critic review and weather](docs/screenshots/04-critic-review-and-weather.png) **Critic review** — the validation outcome and per-day weather across the itinerary. |
+| ![Budget chart and disruption controls](docs/screenshots/05-budget-chart-and-disruptions.png) **Budget + disruptions** — the cost breakdown chart and the live disruption controls (closure, weather, transport, budget cut). | ![Best-effort plan on an edge case](docs/screenshots/06-best-effort-plan-edge-case.png) **Edge-case handling** — an impossible/over-budget request still returns a clearly-flagged best-effort plan instead of failing silently. |
+
 ## API
 
 | Method | Path | Purpose |
